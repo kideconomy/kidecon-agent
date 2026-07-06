@@ -34,7 +34,7 @@ Every architectural decision in `kidecon-agent` flows from one fact: **the lapto
 ### 0.3 What `kidecon-agent`'s own AGENTS.md already mandates (do not regress)
 
 From this repo's `AGENTS.md`:
-- Stack: Python 3.11, Click, httpx, keyring, PyYAML. **No server, no database.**
+- Stack: Python 3.14, Click, httpx, keyring, PyYAML. **No server, no database.**
 - Secrets: **OS keyring only**, never on disk.
 - Config: `kidecon.yaml` (YAML).
 - Sandbox must enforce: no filesystem access outside designated dirs, 60s timeout, first-run approval.
@@ -90,7 +90,7 @@ flowchart TB
     TOOLS2["wrappers/tools.py (file_read, append_md, message_user stub)"]
     SBX["wrappers/sandbox.py (subprocess+timeout, NOT a real sandbox)"]
     CFG["kidecon.yaml (provider=openrouter, tool_gate)"]
-    INST["install.sh (bash venv, needs python3.11)"]
+    INST["install.sh (bash venv, needs python3.14)"]
     KR[("keyring: agent_id, hub_jwt, api_key_*")]
   end
 
@@ -123,7 +123,7 @@ flowchart TB
 | Local tools | `kidecon-agent` | `wrappers/tools.py` | Live, **weak path check** | `file_read`, `file_append_markdown`, `message_user` (stub: print) |
 | User-script sandbox | `kidecon-agent` | `wrappers/sandbox.py:27-54` | Live, **NOT a real sandbox** | `subprocess.run` + 60s timeout + first-run approval; no seccomp/AppArmor, no net-egress block |
 | Config | `kidecon-agent` | `kidecon.yaml` | Live | `provider: openrouter`, `tool_gate` allow/deny/require_approval |
-| Install bootstrap | `kidecon-agent` | `install.sh` | Live, **normie-unfriendly** | bash venv, requires `python3.11` on PATH |
+| Install bootstrap | `kidecon-agent` | `install.sh` | Live, **normie-unfriendly** | bash venv, requires `python3.14` on PATH |
 | Keyring secrets | `kidecon-agent` | `wrappers/hub_client.py:9-12` | Live | `agent_id`, `hub_jwt`, `api_key_<name>` under service `kidecon-agent` |
 | Persistent Discord bot | `kidecon-pm` | `main.py:107-113` | **Deprecated** | Pattern to PORT into the hub (lifespan `bot.start()`); do not reuse pm itself |
 | Slash command defer→followup | `kidecon-pm` | `main.py:85-104` | **Deprecated** | Pattern to copy when the hub adds Discord |
@@ -487,7 +487,7 @@ Under the **current polling transport**, several fallbacks behave differently:
 
 | Failure | Symptom | Mitigation |
 |---|---|---|
-| Python not installed | `bash install.sh` fails / "python3.11 not found" | Do not use pip/bash-install for normies (§5); bundle Python. |
+| Python not installed | `bash install.sh` fails / "python3.14 not found" | Do not use pip/bash-install for normies (§5); bundle Python. |
 | IT-managed laptop | Cannot install unsigned apps / no admin | Signed + notarized installer; per-user install where possible. |
 | Keychain prompt confusion | User denies keychain access → secrets lost | Onboarding screen explains the prompt; `doctor` detects denied keychain and re-prompts. |
 | Discord account not linked | Bot Master has no `discord_user_id` | `doctor` detects → deep-links to kidecon profile page → re-run linkage flow. |
@@ -541,7 +541,7 @@ Today the hub writes a `Telemetry` row on every MCP call (`api/mcp_gateway.py:67
 
 ### 5.1 Current state: `install.sh` is developer-tier
 
-`kidecon-agent/install.sh` creates a venv, `pip install`s deps, copies `kidecon.yaml` to `~/.config/kidecon/`, prompts for an OpenRouter key (stored in keyring), stubs Hermes, and registers the agent. It requires **Python 3.11 on PATH as `python3.11`** (per `docs/ONBOARDING.md`). This is the **pip tier** and is not viable for the normie audience. The paths below address that.
+`kidecon-agent/install.sh` creates a venv, `pip install`s deps, copies `kidecon.yaml` to `~/.config/kidecon/`, prompts for an OpenRouter key (stored in keyring), stubs Hermes, and registers the agent. It requires **Python 3.14 on PATH as `python3.14`** (per `docs/ONBOARDING.md`). This is the **pip tier** and is not viable for the normie audience. The paths below address that.
 
 ### 5.2 The install matrix
 
@@ -779,7 +779,7 @@ OS keyring has gaps: headless VPS often has no SecretService daemon; SSH-only bo
 | Sandbox is a permission gate, not a sandbox (security claim false) | Critical | Build real seccomp/AppArmor sandbox; test invariant (§1.5) |
 | `tools.py` prefix-string path check is weak | Medium | Use `is_relative_to` (Phase 0) |
 | O(N) JWT auth scan on every poll/call | Medium | Hub-side: index by `sub` or shared issuer (§1.3) |
-| Normie can't install (pip/bash needs python3.11) | High | Native installer via web portal (Path C, §5.5) |
+| Normie can't install (pip/bash needs python3.14) | High | Native installer via web portal (Path C, §5.5) |
 | Polling model makes F4 (defer+race) hard for slash commands | Medium | Either accept F1/F2 immediate answers, or add WebSocket (§3.8.4, §1.7) |
 | Laptop-offline feels unreliable | High | F1 (read fallback) + F2 (honest) + F6 (digest) combo (§3.8) |
 | Access control surface unaddressed — the hub is a *learning* hub; non-staff filtering must protect all users | Critical | RESOLVED: uniform non-staff access — all users (adults and children) receive identical filtered outputs. No age detection. Staff (tier 3) is the only exception. (§4.5) |
@@ -800,6 +800,6 @@ The gaps that will silently break the program if left unresolved, in priority or
 2. **Access control posture is RESOLVED** (§4.5) — uniform non-staff access, staff only exception, no age detection. The blocking legal/ethical risk is closed.
 3. **Identity is fragmented** across the deprecated `mappings.json`, the hub `Agent` table, and `users.User.discord_user_id` (§1.6, §2.1).
 4. **Discord has no home** — pm is deprecated, the hub has no Discord layer; decide build-into-hub (Option A) vs defer (Option B) before any Discord UX work (§1.6).
-5. **Normie install is not solved** (§5) — `install.sh` requires `python3.11`; the stated audience cannot use it.
+5. **Normie install is not solved** (§5) — `install.sh` requires `python3.14`; the stated audience cannot use it.
 
 Everything else is engineering against a known shape. Formalize the two contracts (`INTEGRATION.md`, `HUB_CONTRACT.md`), lock the ten open decisions in §8, and the phased plan in §7 becomes buildable.

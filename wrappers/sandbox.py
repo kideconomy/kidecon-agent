@@ -1,5 +1,10 @@
+# SECURITY: This is a permission gate, not a sandbox. No seccomp/AppArmor
+# isolation, no net-egress block. Upgrade path: see AGENT_NETWORK_REFERENCE.md
+# §1.5 for real sandbox requirements (seccomp, AppArmor, network egress blocking).
 import logging
 import subprocess
+from datetime import UTC
+from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -15,18 +20,17 @@ class UserScriptSandbox:
         APPROVED_FILE.touch()
 
     def _is_approved(self, script_name: str) -> bool:
-        approved = APPROVED_FILE.read_text().splitlines()
-        return script_name in approved
+        approved_lines = APPROVED_FILE.read_text().splitlines()
+        return any(line.startswith(f"{script_name}\t") for line in approved_lines)
 
-    def _approve(self, script_name: str) -> None:
-        approved = APPROVED_FILE.read_text().splitlines()
-        if script_name not in approved:
+    def _approve(self, script_name: str, reason: str = "user") -> None:
+        approved_lines = APPROVED_FILE.read_text().splitlines()
+        if not any(line.startswith(f"{script_name}\t") for line in approved_lines):
+            timestamp = datetime.now(UTC).isoformat()
             with APPROVED_FILE.open("a") as f:
-                f.write(script_name + "\n")
+                f.write(f"{script_name}\t{timestamp}\tapproved\t{reason}\n")
 
-    def execute(
-        self, script_name: str, args: list[str] | None = None, auto_approve: bool = False
-    ) -> dict:
+    def execute(self, script_name: str, args: list[str] | None = None, auto_approve: bool = False) -> dict:
         script_path = SCRIPTS_DIR / f"{script_name}.py"
         if not script_path.exists():
             return {"error": f"Script not found: {script_name}"}

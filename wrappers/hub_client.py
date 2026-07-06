@@ -95,10 +95,14 @@ class HubClient:
         response.raise_for_status()
         return response.json()
 
-    def publish_skill(self, skill_card: dict) -> bool:
-        # Stub — hub skill submission endpoint TBD
-        logger.info("Publishing skill: %s", skill_card.get("name", "unknown"))
-        return True
+    def publish_skill(self, skill_card: dict) -> dict:
+        return self.submit_skill(
+            name=skill_card["name"],
+            version=skill_card.get("version", "1.0.0"),
+            category=skill_card.get("category", "unknown"),
+            description=skill_card.get("description", ""),
+            definition=skill_card.get("definition"),
+        )
 
     def discover_skills(self, query: str) -> list[dict]:
         response = httpx.get(
@@ -116,3 +120,97 @@ class HubClient:
         )
         response.raise_for_status()
         return response.json().get("tier", 1)
+
+    def update_status(self, status: str) -> dict:
+        response = httpx.put(
+            f"{self.hub_url}/api/agent/{self.agent_id}/status",
+            json={"status": status},
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def admin_pending_skills(self) -> list[dict]:
+        response = httpx.get(
+            f"{self.hub_url}/api/admin/pending_skills",
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json().get("skills", [])
+
+    def admin_approve_skill(self, skill_id: str) -> dict:
+        response = httpx.post(
+            f"{self.hub_url}/api/admin/approve_skill/{skill_id}",
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def admin_reject_skill(self, skill_id: str, reason: str) -> dict:
+        response = httpx.post(
+            f"{self.hub_url}/api/admin/reject_skill/{skill_id}",
+            json={"reason": reason},
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def admin_list_agents(self) -> list[dict]:
+        response = httpx.get(
+            f"{self.hub_url}/api/admin/agents",
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json().get("agents", [])
+
+    def admin_set_tier(self, agent_id: str, tier: int) -> dict:
+        response = httpx.post(
+            f"{self.hub_url}/api/admin/agents/{agent_id}/tier",
+            json={"tier": tier},
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def admin_set_staff(self, agent_id: str, is_staff: bool) -> dict:
+        response = httpx.post(
+            f"{self.hub_url}/api/admin/agents/{agent_id}/staff",
+            json={"is_staff": is_staff},
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def submit_skill(
+        self,
+        name: str,
+        version: str,
+        category: str,
+        description: str,
+        definition: dict | None = None,
+    ) -> dict:
+        response = httpx.post(
+            f"{self.hub_url}/api/skills",
+            json={
+                "name": name,
+                "version": version,
+                "category": category,
+                "description": description,
+                "definition": definition or {},
+            },
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def my_skills(self, status: str | None = None) -> list[dict]:
+        params = {}
+        if status:
+            params["status"] = status
+        response = httpx.get(
+            f"{self.hub_url}/api/skills/mine",
+            params=params,
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json().get("skills", [])

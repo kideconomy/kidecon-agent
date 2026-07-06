@@ -105,3 +105,4 @@ kilo.jsonc
 
 # detect-secrets baseline (tracks known dev-only secrets locally; never commit)
 .secrets.baseline
+tmp/

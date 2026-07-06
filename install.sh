@@ -23,12 +23,13 @@ if [ ! -d "$VENV_DIR" ]; then
     echo "Creating virtual environment..."
     python3.14 -m venv "$VENV_DIR"
 fi
-source "$VENV/bin/activate"
+source "$VENV_DIR/bin/activate"
 
 # 3. Install the kidecon CLI (creates 'kidecon' command in the venv)
 echo "Installing kidecon-agent CLI..."
 pip install --upgrade pip
 pip install "${SCRIPT_DIR}"
+chmod +x "${SCRIPT_DIR}/cli/kidecon.py"
 
 # 4. Place config
 mkdir -p "$CONFIG_DIR"

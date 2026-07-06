@@ -1,57 +1,267 @@
 import logging
+import os
 import pathlib
 import subprocess
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
+import typer
 import yaml
-
-import click
 import keyring
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 
-from wrappers.hub_client import HubClient, KEYRING_SERVICE, KEY_JWT, KEY_AGENT_ID
-from wrappers.sandbox import UserScriptSandbox
+from wrappers.hub_client import KEY_AGENT_ID
+from wrappers.hub_client import KEY_JWT
+from wrappers.hub_client import KEYRING_SERVICE
+from wrappers.hub_client import HubClient
+from wrappers.sandbox import APPROVED_FILE as SANDBOX_APPROVED_FILE
+from wrappers.sandbox import SCRIPTS_DIR as SANDBOX_SCRIPTS_DIR
 
 logger = logging.getLogger(__name__)
+
+app = typer.Typer(help="KidEconomy Agent CLI — lifecycle management for your KidEconomy agent.")
+console = Console()
+
+
+def _do_splash(ctx: typer.Context, *, no_splash: bool = False) -> None:
+    import select
+    import time
+
+    from rich.live import Live
+    from rich.panel import Panel
+    from rich.text import Text
+
+    if no_splash or not sys.stdout.isatty():
+        typer.echo(ctx.get_help())
+        return
+
+    boot = [
+        ("[bold green]> The world hums with possibility...[/bold green]", 0.35),
+        ("[bold yellow]> Light finds its way through the code...[/bold yellow]", 0.4),
+        ("[bold green]> Your companion awakens...[/bold green]", 0.5),
+        ("[bold green]> The road ahead is open.[/bold green]", 0.3),
+    ]
+
+    rendered = ""
+    with Live(refresh_per_second=12, console=console) as live:
+        for line, delay in boot:
+            rendered += line + "\n"
+            live.update(Text.from_markup(rendered))
+            time.sleep(delay)
+
+    console.print()
+    try:
+        import pyfiglet
+
+        title = pyfiglet.figlet_format("KidEconomy", font="slant")
+    except Exception:
+        title = "KidEconomy Agent"
+
+    logo = Text(f"\n{title.rstrip()}\n", style="bold yellow")
+    console.print(Panel(logo, border_style="green", expand=False, padding=(0, 2)))
+    console.print()
+
+    console.print("[bold yellow]Are you ready to go! >_ [/bold yellow]", end="", highlight=False)
+    answer = ""
+    if sys.stdin.isatty():
+        rlist, _w, _x = select.select([sys.stdin], [], [], 2.0)
+        if rlist:
+            answer = sys.stdin.readline().strip().lower()
+            time.sleep(0.15)
+        else:
+            console.print()
+            console.print("[dim](auto-proceeding...)[/dim]")
+    else:
+        console.print()
+    if answer in ("n", "no", "nah", "nope", "exit"):
+        console.print("[dim]The adventure waits. See you later, hero.[/dim]")
+        return
+
+    typer.echo(ctx.get_help())
+
+
+def _apply_no_color(no_color: bool) -> None:
+    global console
+    if no_color or os.environ.get("NO_COLOR") or os.environ.get("KIDECON_PLAIN"):
+        console = Console(color_system=None, highlight=False, force_terminal=False)
+
+
+@app.callback(invoke_without_command=True)
+def main(
+    ctx: typer.Context,
+    no_color: bool = typer.Option(False, "--no-color", help="Disable color and rich formatting."),
+    no_splash: bool = typer.Option(False, "--no-splash", help="Skip the opening animation."),
+):
+    """KidEconomy Agent CLI — lifecycle management for your KidEconomy agent."""
+    _apply_no_color(no_color)
+    if ctx.invoked_subcommand is None:
+        _do_splash(ctx, no_splash=no_splash or no_color)
+        raise typer.Exit
 
 CONFIG_PATH = "kidecon.yaml"
 
 
 def load_config() -> dict:
-    with open(CONFIG_PATH) as f:
-        return yaml.safe_load(f)
+    msg = "kidecon.yaml not found. Place it at ~/.config/kidecon/kidecon.yaml or in the current directory."
+    candidates: list[pathlib.Path] = [
+        pathlib.Path(CONFIG_PATH),
+        pathlib.Path.home() / ".config" / "kidecon" / "kidecon.yaml",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return yaml.safe_load(candidate.read_bytes())
+    raise FileNotFoundError(msg)
 
 
-@click.group()
-def cli():
-    """KidEconomy Agent CLI — lifecycle management for your KidEconomy agent."""
+def hub_client() -> HubClient:
+    config = load_config()
+    return HubClient(hub_url=config["hub_url"])
 
 
-@cli.command()
-@click.option("--name", prompt="Agent name", help="Name for this agent")
-def setup(name):
-    """First-time install: keyring, registration with hub."""
+# ------------------------------------------------------------------
+# init
+# ------------------------------------------------------------------
+@app.command()
+def init(
+    hub: str = typer.Option(
+        "http://localhost:8000", "--hub", help="Hub URL (default: http://localhost:8000)",
+    ),
+):
+    """Initialize the agent config for a hub environment.
+
+    Writes the hub URL to ~/.config/kidecon/kidecon.yaml and clears any
+    existing registration so you can register fresh against the new hub.
+
+    Examples:
+        kidecon init                       # local development
+        kidecon init --hub https://hub.kidecon.me  # production
+    """
+    import yaml as _yaml
+
+    config_dir = pathlib.Path.home() / ".config" / "kidecon"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / "kidecon.yaml"
+
+    defaults = {
+        "hub_url": hub,
+        "provider": "openrouter",
+        "tool_gate": {
+            "allow": [
+                "file_read",
+                "file_append_markdown",
+                "hub_call",
+                "user_script_execute",
+                "message_user",
+            ],
+            "deny": ["file_write_binary", "shell_execute", "file_delete"],
+            "require_approval": ["user_script_first_run", "hub_collaboration_request"],
+        },
+        "update_channel": "stable",
+        "hermes_version": "v1.2.0",
+    }
+
+    config_path.write_text(_yaml.dump(defaults, default_flow_style=False))
+    console.print(f"[bold green]✓[/bold green] Config written: {config_path}")
+    console.print(f"  [bold cyan]Hub URL:[/bold cyan] {hub}")
+
+    local_config = pathlib.Path("kidecon.yaml")
+    if local_config.exists():
+        content = local_config.read_text()
+        updated = _yaml.safe_load(content) or {}
+        updated["hub_url"] = hub
+        local_config.write_text(_yaml.dump(updated, default_flow_style=False))
+        console.print(f"[bold green]✓[/bold green] Local config updated: {local_config.resolve()}")
+
+    try:
+        keyring.delete_password(KEYRING_SERVICE, KEY_JWT)
+        keyring.delete_password(KEYRING_SERVICE, KEY_AGENT_ID)
+        console.print("[bold green]✓[/bold green] Old registration cleared from keyring.")
+    except Exception:
+        logger.debug("No existing registration to clear — proceeding fresh.")
+
+    console.print()
+    console.print("Next: [bold]kidecon setup --name <name>[/bold]")
+
+
+# ------------------------------------------------------------------
+# setup
+# ------------------------------------------------------------------
+@app.command()
+def setup(
+    name: str = typer.Option(..., "--name", prompt="Agent name", help="Human-readable name for this agent (e.g. walkthrough-agent)"),
+):
+    """Register this agent with the hub.
+
+    Creates a unique agent ID and JWT token stored in your OS keyring.
+    The agent name is a display label — choose something descriptive.
+    """
     config = load_config()
     client = HubClient(hub_url=config["hub_url"])
-    jwt = client.register(name=name, platform="cli")
-    click.echo(f"Agent registered. JWT stored in keyring.")
-    click.echo(f"Agent ID: {client.agent_id}")
+    client.register(name=name, platform="cli")
+    console.print("[bold green]✓[/bold green] Agent registered. JWT stored in keyring.")
+    console.print(f"  [bold cyan]Agent ID:[/bold cyan] {client.agent_id}")
+    console.print(f"  [bold cyan]Hub:[/bold cyan]      {config['hub_url']}")
 
 
-@cli.command()
+# ------------------------------------------------------------------
+# start
+# ------------------------------------------------------------------
+@app.command()
 def start():
-    """Launch Hermes with KidEconomy config."""
-    click.echo("Starting Hermes... (stub — Hermes integration TBD)")
-    # Actual: subprocess.Popen(["hermes", "--config", "kidecon.yaml"])
+    """Launch the agent — verifies connectivity and JWT, marks online on hub."""
+    import contextlib
+
+    import httpx
+
+    config = load_config()
+    hub_url = config["hub_url"]
+    client = HubClient(hub_url=hub_url)
+
+    try:
+        r = httpx.get(f"{hub_url}/", timeout=5.0)
+        r.raise_for_status()
+    except Exception as err:
+        console.print(f"[bold red]✗[/bold red] Hub unreachable at {hub_url}")
+        raise typer.Exit(code=1) from err
+
+    if not client.jwt:
+        console.print("[bold red]✗[/bold red] Not registered. Run '[bold]kidecon setup[/bold]' first.")
+        raise typer.Exit(code=1)
+
+    try:
+        tier = client.get_tier()
+    except Exception as err:
+        console.print("[bold red]✗[/bold red] JWT invalid or expired. Re-run '[bold]kidecon setup[/bold]'.")
+        raise typer.Exit(code=1) from err
+
+    with contextlib.suppress(Exception):
+        client.update_status("online")
+
+    console.print(f"[bold green]✓[/bold green] Agent ready — tier {tier}, connected to {hub_url}")
 
 
-@cli.command()
+# ------------------------------------------------------------------
+# stop
+# ------------------------------------------------------------------
+@app.command()
 def stop():
-    """Graceful shutdown of the agent."""
-    click.echo("Stopping agent... (stub)")
+    """Graceful shutdown — marks agent offline on hub and cleans up."""
+    try:
+        config = load_config()
+        client = HubClient(hub_url=config["hub_url"])
+        client.update_status("offline")
+        console.print("[bold green]✓[/bold green] Agent marked offline on hub.")
+    except Exception:
+        console.print("[bold yellow]⚠[/bold yellow] Could not reach hub to update status (already offline?).")
 
 
-@cli.command()
+# ------------------------------------------------------------------
+# status
+# ------------------------------------------------------------------
+@app.command()
 def status():
     """Check if agent is running and connected to hub."""
     try:
@@ -60,74 +270,640 @@ def status():
         tier = client.get_tier()
         jwt = keyring.get_password(KEYRING_SERVICE, KEY_JWT)
         agent_id = keyring.get_password(KEYRING_SERVICE, KEY_AGENT_ID)
-        click.echo(f"Agent ID: {agent_id}")
-        click.echo(f"Registered: {'yes' if jwt else 'no'}")
-        click.echo(f"Tier: {tier}")
-    except Exception as e:
-        click.echo(f"Not connected: {e}")
+    except Exception as err:
+        console.print(f"[bold red]✗[/bold red] Not connected: {err}")
+        raise typer.Exit(code=1) from err
+
+    console.print(f"[bold cyan]Agent ID:[/bold cyan]     {agent_id or '(not set)'}")
+    console.print(f"[bold cyan]Registered:[/bold cyan]   {'yes' if jwt else 'no'}")
+    console.print(f"[bold cyan]Tier:[/bold cyan]        {tier}")
+    console.print(f"[bold cyan]Hub:[/bold cyan]         {config['hub_url']}")
 
 
-@cli.command()
-def update():
-    """Pull latest Hermes + KidEconomy config."""
-    click.echo("Checking for updates... (stub)")
-    # Actual: re-run install.sh with latest version tag
-
-
-@cli.group()
-def key():
-    """Manage API keys in keyring."""
-
-
-@key.command("add")
-@click.option("--name", prompt="Key name (e.g. openrouter)", help="Name of the API key")
-@click.option("--value", prompt="API key value", hide_input=True, help="The API key")
-def key_add(name, value):
-    keyring.set_password(KEYRING_SERVICE, f"api_key_{name}", value)
-    click.echo(f"Key '{name}' stored.")
-
-
-@key.command("list")
-def key_list():
-    # keyring doesn't enumerate easily; show known keys
-    known = ["openrouter", "hub_jwt", "agent_id"]
-    for k in known:
-        v = keyring.get_password(KEYRING_SERVICE, k if k.startswith("api_key_") else k)
-        masked = f"{v[:4]}...{v[-4:]}" if v and len(v) > 8 else ("***" if v else "(not set)")
-        click.echo(f"  {k}: {masked}")
-
-
-@cli.command()
+# ------------------------------------------------------------------
+# tier
+# ------------------------------------------------------------------
+@app.command()
 def tier():
     """Show current capability tier."""
-    config = load_config()
-    client = HubClient(hub_url=config["hub_url"])
-    click.echo(f"Current tier: {client.get_tier()}")
+    try:
+        client = hub_client()
+        console.print(f"[bold cyan]Current tier:[/bold cyan] {client.get_tier()}")
+    except Exception as err:
+        console.print(f"[bold red]✗[/bold red] Could not read tier: {err}")
+        raise typer.Exit(code=1) from err
 
 
-@cli.group()
-def skills():
+# ------------------------------------------------------------------
+# update
+# ------------------------------------------------------------------
+@app.command()
+def update():
+    """Update kidecon-agent to the latest version."""
+    repo_dir = pathlib.Path(__file__).resolve().parent.parent
+    git_dir = repo_dir / ".git"
+
+    if not git_dir.exists():
+        console.print("[bold yellow]⚠[/bold yellow] Not a git checkout. To update, re-run:")
+        console.print(f"  [dim]cd {repo_dir} && bash install.sh[/dim]")
+        return
+
+    try:
+        result = subprocess.run(
+            ["git", "pull", "--ff-only"],
+            capture_output=True,
+            text=True,
+            cwd=str(repo_dir),
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as err:
+        console.print("[bold red]✗[/bold red] git pull timed out after 30s.")
+        raise typer.Exit(code=1) from err
+
+    if result.returncode != 0:
+        console.print("[bold red]✗[/bold red] git pull failed:")
+        console.print(f"  [dim]{result.stderr.strip()}[/dim]")
+        raise typer.Exit(code=1)
+
+    console.print(f"[bold green]✓[/bold green] {result.stdout.strip() or 'Already up to date.'}")
+    subprocess.run(
+        ["pip", "install", str(repo_dir)],
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    console.print("[bold green]✓[/bold green] Reinstalled from local checkout.")
+
+
+# ------------------------------------------------------------------
+# key
+# ------------------------------------------------------------------
+_key_app = typer.Typer(help="Manage API keys in keyring.")
+app.add_typer(_key_app, name="key", help="Manage API keys in keyring.")
+
+
+@_key_app.callback()
+def key_main(
+    no_color: bool = typer.Option(False, "--no-color", help="Disable color and rich formatting."),
+):
+    """Manage API keys in keyring."""
+    _apply_no_color(no_color)
+
+
+@_key_app.command("add")
+def key_add(
+    name: str = typer.Option(..., "--name", prompt="Key name (e.g. openrouter)", help="Name of the API key"),
+    value: str = typer.Option(..., "--value", prompt="API key value", hide_input=True, help="The API key"),
+):
+    keyring.set_password(KEYRING_SERVICE, f"api_key_{name}", value)
+    console.print(f"[bold green]✓[/bold green] Key '[bold]{name}[/bold]' stored.")
+
+
+@_key_app.command("list")
+def key_list():
+    known = ["openrouter", "hub_jwt", "agent_id"]
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Name")
+    table.add_column("Value", overflow="fold")
+    for k in known:
+        v = keyring.get_password(KEYRING_SERVICE, k if k.startswith("api_key_") else k)
+        if v and len(v) > 8:
+            masked = f"{v[:4]}...{v[-4:]}"
+        elif v:
+            masked = "***"
+        else:
+            masked = "(not set)"
+        table.add_row(k, masked)
+    console.print(table)
+
+
+# ------------------------------------------------------------------
+# skills
+# ------------------------------------------------------------------
+_skills_app = typer.Typer(help="Manage installed skills.")
+app.add_typer(_skills_app, name="skills", help="Manage installed skills.")
+
+
+@_skills_app.callback()
+def skills_main(
+    no_color: bool = typer.Option(False, "--no-color", help="Disable color and rich formatting."),
+):
     """Manage installed skills."""
+    _apply_no_color(no_color)
 
 
-@skills.command("list")
+@_skills_app.command("list")
 def skills_list():
-    """Show installed skills."""
-    click.echo("Installed skills: (none yet)")
+    console.print("[dim]No skills installed yet.[/dim]")
 
 
-@skills.command("browse")
-@click.argument("query", required=False)
-def skills_browse(query):
+@_skills_app.command("discover")
+def skills_discover(
+    query: str = typer.Argument(None, help="Search query"),
+):
     """Query hub skill directory."""
-    config = load_config()
-    client = HubClient(hub_url=config["hub_url"])
-    results = client.discover_skills(query or "")
+    try:
+        client = hub_client()
+        results = client.discover_skills(query or "")
+    except Exception as err:
+        console.print(f"[bold red]✗[/bold red] Discovery failed: {err}")
+        raise typer.Exit(code=1) from err
+
     if not results:
-        click.echo("No skills found.")
-    for skill in results:
-        click.echo(f"  {skill['name']} v{skill['version']} [{skill.get('category', 'uncategorized')}]")
+        console.print("[dim]No skills found.[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Name")
+    table.add_column("Version")
+    table.add_column("Category")
+    for s in results:
+        table.add_row(s["name"], s["version"], s.get("category", "uncategorized"))
+    console.print(table)
+
+
+@_skills_app.command("submit")
+def skills_submit(
+    file: str = typer.Option(None, "--file", help="Path to skill JSON file"),
+    inline: str = typer.Option(None, "--inline", help="Full skill JSON as a single argument"),
+    name: str = typer.Option(None, "--name", help="Unique skill name"),
+    version: str = typer.Option("1.0.0", "--version", help="Semantic version"),
+    category: str = typer.Option(None, "--category", help="e.g. scheduling, analytics"),
+    description: str = typer.Option(None, "--description", help="What the skill does"),
+):
+    """Submit a skill to the hub for review.
+
+    Three modes: --file to load from JSON, --inline to pass JSON directly,
+    or --name/--category/--description for interactive flags.
+    """
+    import json as _json
+
+    definition = {}
+    if file:
+        data = _json.loads(pathlib.Path(file).read_text())
+        name = data["name"]
+        version = data.get("version", "1.0.0")
+        category = data["category"]
+        description = data["description"]
+        definition = data.get("definition", {})
+    elif inline:
+        data = _json.loads(inline)
+        name = data["name"]
+        version = data.get("version", "1.0.0")
+        category = data["category"]
+        description = data["description"]
+        definition = data.get("definition", {})
+    else:
+        if not name:
+            name = typer.prompt("Skill name")
+        if not category:
+            category = typer.prompt("Category")
+        if not description:
+            description = typer.prompt("Description")
+
+    try:
+        client = hub_client()
+        result = client.submit_skill(name, version, category, description, definition or None)
+    except Exception as err:
+        console.print(f"[bold red]✗[/bold red] Submission failed: {err}")
+        raise typer.Exit(code=1) from err
+
+    console.print(f"[bold green]✓[/bold green] Skill submitted: {result['skill_id']} [{result['status']}]")
+    eval_data = result.get("evaluation", {})
+    if eval_data:
+        console.print(f"  [bold cyan]Domain:[/bold cyan]     {eval_data.get('resolved_domain_id', 'N/A')}")
+        console.print(f"  [bold cyan]Action:[/bold cyan]     {eval_data.get('resolved_action_id', 'N/A')}")
+        console.print(f"  [bold cyan]Confidence:[/bold cyan] {eval_data.get('confidence', 'N/A')}")
+
+
+@_skills_app.command("mine")
+def skills_mine(
+    status: str = typer.Option(None, "--status", help="Filter by status (submitted, pending, live, rejected)"),
+):
+    """List my submitted skills."""
+    try:
+        client = hub_client()
+        skills = client.my_skills(status)
+    except Exception as err:
+        console.print(f"[bold red]✗[/bold red] Could not list skills: {err}")
+        raise typer.Exit(code=1) from err
+
+    if not skills:
+        console.print("[dim]No skills found.[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("ID")
+    table.add_column("Name")
+    table.add_column("Version")
+    table.add_column("Status")
+    table.add_column("Category")
+    table.add_column("Domain")
+    table.add_column("Confidence")
+    for s in skills:
+        ev = s.get("evaluation") or {}
+        table.add_row(
+            s["id"], s["name"], s["version"],
+            s["approval_status"], s["category"],
+            ev.get("resolved_domain_id", "-"),
+            str(ev.get("confidence", "-")),
+        )
+    console.print(table)
+
+
+@_skills_app.command("inspect")
+def skills_inspect(
+    skill_id: str = typer.Argument(..., help="UUID of the skill to inspect"),
+):
+    """Show full evaluation detail for a submitted skill."""
+    try:
+        client = hub_client()
+        skills = client.my_skills()
+    except Exception as err:
+        console.print(f"[bold red]✗[/bold red] Could not fetch skills: {err}")
+        raise typer.Exit(code=1) from err
+
+    found = None
+    for s in skills:
+        if s["id"] == skill_id:
+            found = s
+            break
+
+    if not found:
+        console.print(f"[bold red]✗[/bold red] Skill {skill_id} not found in your submissions.")
+        raise typer.Exit(code=1)
+
+    console.print(f"[bold]Skill:[/bold] {found['name']} v{found['version']}")
+    console.print(f"[bold]Status:[/bold] {found['approval_status']}")
+    console.print(f"[bold]Submitted:[/bold] {found['submitted_at']}")
+    ev = found.get("evaluation") or {}
+    if ev:
+        console.print("\n[bold]Evaluation:[/bold]")
+        console.print(f"  [bold cyan]Normalized:[/bold cyan]  {ev.get('normalized_text', 'N/A')}")
+        console.print(f"  [bold cyan]Domain:[/bold cyan]      {ev.get('resolved_domain_id', 'N/A')}")
+        console.print(f"  [bold cyan]Action:[/bold cyan]      {ev.get('resolved_action_id', 'N/A')}")
+        console.print(f"  [bold cyan]Confidence:[/bold cyan]   {ev.get('confidence', 'N/A')}")
+        console.print(f"  [bold cyan]Matched on:[/bold cyan]   {ev.get('matched_on', 'N/A')}")
+    else:
+        console.print("[dim]No evaluation details available.[/dim]")
+
+
+SKILL_CATEGORIES = {
+    "scheduling": "Calendar, availability, reminders, bookings",
+    "monitoring": "Error tracking, crash reporting, system health",
+    "analytics": "Campaign data, metrics, KPIs, reports",
+    "compliance": "Content safety, legal checks, policy enforcement",
+    "documentation": "Knowledge base search, doc retrieval, references",
+    "support": "Ticket creation, help desk, issue tracking",
+    "communication": "Messaging, notifications, alerts, Discord",
+}
+
+SKILL_TEMPLATE = """{
+  "name": "my-skill-name",
+  "version": "1.0.0",
+  "category": "scheduling",
+  "description": "Describe what this skill does in third person. Example: Retrives calendar availability for a given agent and returns upcoming time slots.",
+  "definition": {
+    "inputs": {
+      "type": "object",
+      "properties": {
+        "agent_id": {"type": "string", "description": "UUID of the target agent"},
+        "window_hours": {"type": "integer", "description": "Hours ahead to scan"}
+      },
+      "required": ["agent_id"],
+      "additionalProperties": false
+    },
+    "outputs": {
+      "type": "object",
+      "properties": {
+        "slots": {"type": "array", "description": "Available time slots as ISO 8601", "items": {"type": "string"}},
+        "total_count": {"type": "integer", "description": "Number of slots found"}
+      }
+    }
+  }
+}
+"""
+
+SKILL_GUIDE_PATH = pathlib.Path(__file__).resolve().parent.parent / "docs" / "SKILL_AUTHORING.md"
+
+
+@_skills_app.command("categories")
+def skills_categories():
+    """List available skill category namespaces."""
+    console.print("[bold]Available Categories[/bold]\n")
+    for cat, desc in SKILL_CATEGORIES.items():
+        console.print(f"  [bold cyan]{cat:20s}[/bold cyan] {desc}")
+
+
+@_skills_app.command("template")
+def skills_template(
+    output: str = typer.Option("tmp/skill-template.json", "--output", "-o", help="Path to write the template"),
+):
+    """Generate a starter skill definition (JSON Schema format).
+
+    Writes to tmp/skill-template.json by default (gitignored).
+    Edit the file, then submit with 'kidecon skills submit --file'.
+    """
+    out_path = pathlib.Path(output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(SKILL_TEMPLATE)
+    console.print(f"[bold green]✓[/bold green] Template written to [bold]{out_path}[/bold]")
+    console.print("[dim]Edit this file, then run: kidecon skills submit --file " + output + "[/dim]")
+
+
+@_skills_app.command("guide")
+def skills_guide(
+    full: bool = typer.Option(False, "--full", help="Print the complete authoring guide"),
+):
+    """Print the skill authoring guide.
+
+    Without --full, prints a summary and the path.
+    With --full, prints the complete markdown document.
+    """
+    if SKILL_GUIDE_PATH.exists():
+        content = SKILL_GUIDE_PATH.read_text()
+        if full:
+            print(content)
+        else:
+            for line in content.splitlines()[:30]:
+                print(line)
+            console.print(f"\n[dim][...] Full guide: {SKILL_GUIDE_PATH}[/dim]")
+            console.print("[dim]Use --full to print the complete guide.[/dim]")
+    else:
+        console.print("[yellow]Skill authoring guide not found on disk.[/yellow]")
+        console.print(f"[dim]Expected: {SKILL_GUIDE_PATH}[/dim]")
+
+
+# ------------------------------------------------------------------
+# doctor
+# ------------------------------------------------------------------
+@app.command()
+def doctor():
+    """Diagnose agent health — Python, keyring, hub, JWT, sandbox."""
+    import platform
+    from datetime import UTC
+    from datetime import datetime
+    from pathlib import Path
+
+    import httpx
+
+    pass_mark = "[bold green]PASS[/bold green]"
+    fail_mark = "[bold red]FAIL[/bold red]"
+    warn_mark = "[bold yellow]WARN[/bold yellow]"
+
+    console.print(Panel.fit("[bold cyan]KidEconomy Agent Doctor[/bold cyan]", border_style="cyan"))
+
+    results: list[tuple[str, str, str, str]] = []
+
+    def _add(group, label, status, detail, hint=""):
+        results.append((group, label, status, detail, hint))
+
+    py_ver = platform.python_version()
+    py_ok = tuple(int(x) for x in py_ver.split(".")) >= (3, 11)
+    _add("Environment", f"Python {py_ver}", "pass" if py_ok else "fail",
+         "", "" if py_ok else "Install Python 3.11+ from https://python.org")
+
+    try:
+        import keyring as _kr
+        kr_name = type(_kr.get_keyring()).__name__
+        _add("Environment", "Keyring", "pass", kr_name)
+    except Exception:
+        _add("Environment", "Keyring", "fail", "not available",
+             "Install a backend: pip install keyring[SecretStorage]")
+
+    config_path: Path = Path.home() / ".config" / "kidecon" / "kidecon.yaml"
+    if config_path.exists():
+        _add("Environment", "Config", "pass", str(config_path))
+        try:
+            config = load_config()
+            hub_url = config["hub_url"]
+        except Exception as e:
+            _add("Environment", "Config parse", "fail", str(e), "Check kidecon.yaml syntax")
+            hub_url = None
+    else:
+        _add("Environment", "Config", "fail", "not found",
+             "Run `bash install.sh` to place ~/.config/kidecon/kidecon.yaml")
+        hub_url = None
+
+    if hub_url:
+        try:
+            r = httpx.get(f"{hub_url}/docs", timeout=5.0)
+            hub_ok = 200 <= r.status_code < 500
+            _add("Hub", "Reachable", "pass" if hub_ok else "fail",
+                 f"{hub_url} (HTTP {r.status_code})",
+                 "" if hub_ok else "Check hub_url in kidecon.yaml")
+        except Exception as e:
+            _add("Hub", "Reachable", "fail", f"{hub_url} — {e}",
+                 "Check hub_url in kidecon.yaml; is kidecon-hub running?")
+
+        jwt = keyring.get_password(KEYRING_SERVICE, KEY_JWT)
+        if jwt:
+            try:
+                client = HubClient(hub_url=hub_url)
+                tier_val = client.get_tier()
+                _add("Hub", "JWT", "pass", f"valid (tier {tier_val})")
+            except Exception as e:
+                _add("Hub", "JWT", "fail", str(e),
+                     "Re-register with `kidecon setup --name <name>`")
+        else:
+            _add("Hub", "JWT", "fail", "not set",
+                 "Register with `kidecon setup --name <name>`")
+
+        agent_id = keyring.get_password(KEYRING_SERVICE, KEY_AGENT_ID)
+        if agent_id:
+            _add("Hub", "Agent ID", "pass", agent_id)
+        else:
+            _add("Hub", "Agent ID", "fail", "not set",
+                 "Run `kidecon setup --name <name>` to generate")
+    else:
+        _add("Hub", "Reachable", "warn", "skipped (no config)", "Fix config first")
+        _add("Hub", "JWT", "warn", "skipped")
+        _add("Hub", "Agent ID", "warn", "skipped")
+
+    messages_log = Path.home() / "kidecon" / "messages.log"
+    if messages_log.exists():
+        mtime = datetime.fromtimestamp(messages_log.stat().st_mtime, tz=UTC)
+        _add("Sandbox", "Messages log", "pass", f"last write {mtime.isoformat()}")
+    else:
+        _add("Sandbox", "Messages log", "warn", "not yet created")
+
+    if SANDBOX_SCRIPTS_DIR.exists():
+        script_count = len(list(SANDBOX_SCRIPTS_DIR.glob("*.py")))
+        _add("Sandbox", "Scripts dir", "pass" if script_count else "warn",
+             f"{SANDBOX_SCRIPTS_DIR} ({script_count} scripts)")
+    else:
+        _add("Sandbox", "Scripts dir", "warn", "does not exist")
+
+    if SANDBOX_APPROVED_FILE.exists():
+        approved_count = len(SANDBOX_APPROVED_FILE.read_text().splitlines())
+        _add("Sandbox", "Approved scripts", "pass", str(approved_count))
+    else:
+        _add("Sandbox", "Approved scripts", "warn", "not yet created")
+
+    workspace = Path.home() / "kidecon" / "workspace"
+    ws_exists = workspace.exists()
+    _add("Sandbox", "Workspace dir", "pass" if ws_exists else "fail",
+         str(workspace),
+         "" if ws_exists else "Run `mkdir -p ~/kidecon/workspace` to create")
+
+    counts = {"pass": 0, "fail": 0, "warn": 0}
+    order = ["Environment", "Hub", "Sandbox"]
+    for group in order:
+        rows = [r for r in results if r[0] == group]
+        if not rows:
+            continue
+        console.print()
+        console.print(f"[bold underline]{group}[/bold underline]")
+        table = Table(show_header=True, header_style="bold", expand=False)
+        table.add_column("Check", style="bold")
+        table.add_column("Status")
+        table.add_column("Detail", overflow="fold")
+        for _g, label, status, detail, hint in rows:
+            counts[status] += 1
+            if status == "pass":
+                mark = pass_mark
+            elif status == "fail":
+                mark = fail_mark
+            else:
+                mark = warn_mark
+            text = detail or "—"
+            if hint:
+                text += f"\n[yellow]→ {hint}[/yellow]"
+            table.add_row(label, mark, text)
+        console.print(table)
+
+    total = sum(counts.values())
+    console.print()
+    console.print(
+        f"[bold]{total} checks[/bold] [dim]·[/dim] "
+        f"[green]{counts['pass']} passed[/green] [dim]·[/dim] "
+        + (f"[red]{counts['fail']} failed[/red] [dim]·[/dim] " if counts["fail"]
+           else f"[dim]{counts['fail']} failed[/dim] [dim]·[/dim] ")
+        + (f"[yellow]{counts['warn']} warnings[/yellow]" if counts["warn"]
+           else f"[dim]{counts['warn']} warnings[/dim]"),
+    )
+    if counts["fail"]:
+        raise typer.Exit(code=1)
+
+
+# ------------------------------------------------------------------
+# admin
+# ------------------------------------------------------------------
+_admin_app = typer.Typer(help="Admin commands (requires tier 3 staff agent).")
+app.add_typer(_admin_app, name="admin", help="Admin commands (requires tier 3 staff agent).")
+
+
+@_admin_app.callback()
+def admin_main(
+    no_color: bool = typer.Option(False, "--no-color", help="Disable color and rich formatting."),
+):
+    """Admin commands (requires tier 3 staff agent)."""
+    _apply_no_color(no_color)
+
+
+@_admin_app.command("skills")
+def admin_skills(
+    action: str = typer.Argument(..., help="pending | approve | reject"),
+    skill_id: str = typer.Option(None, "--id", help="Skill ID (required for approve/reject)"),
+    reason: str = typer.Option(None, "--reason", help="Rejection reason (required for reject)"),
+):
+    """Manage skills: pending (list), approve, reject."""
+    client = hub_client()
+
+    if action == "pending":
+        try:
+            skills = client.admin_pending_skills()
+        except Exception as err:
+            console.print(f"[bold red]✗[/bold red] Could not fetch pending skills: {err}")
+            raise typer.Exit(code=1) from err
+        if not skills:
+            console.print("[dim]No pending skills.[/dim]")
+            return
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("ID")
+        table.add_column("Name")
+        table.add_column("Version")
+        table.add_column("Status")
+        table.add_column("Category")
+        for s in skills:
+            table.add_row(s["id"], s["name"], s["version"], s["approval_status"], s["category"])
+        console.print(table)
+
+    elif action == "approve":
+        if not skill_id:
+            raise typer.BadParameter("--id is required for approve")
+        try:
+            result = client.admin_approve_skill(skill_id)
+        except Exception as err:
+            console.print(f"[bold red]✗[/bold red] Approve failed: {err}")
+            raise typer.Exit(code=1) from err
+        console.print(f"[bold green]✓[/bold green] Skill {skill_id} set to {result['status']}.")
+
+    elif action == "reject":
+        if not skill_id:
+            raise typer.BadParameter("--id is required for reject")
+        if not reason:
+            raise typer.BadParameter("--reason is required for reject")
+        try:
+            result = client.admin_reject_skill(skill_id, reason)
+        except Exception as err:
+            console.print(f"[bold red]✗[/bold red] Reject failed: {err}")
+            raise typer.Exit(code=1) from err
+        console.print(f"[bold yellow]⚠[/bold yellow] Skill {skill_id} rejected: {result['reason']}")
+
+
+@_admin_app.command("agents")
+def admin_agents(
+    action: str = typer.Argument(..., help="list | promote | staff | unstaff"),
+    agent_id: str = typer.Option(None, "--id", help="Agent ID (required for promote/staff/unstaff)"),
+    tier: int = typer.Option(None, "--tier", help="Tier level (required for promote)"),
+):
+    """Manage agents: list, promote (set tier), staff/unstaff (toggle staff flag)."""
+    client = hub_client()
+
+    if action == "list":
+        try:
+            agents = client.admin_list_agents()
+        except Exception as err:
+            console.print(f"[bold red]✗[/bold red] Could not list agents: {err}")
+            raise typer.Exit(code=1) from err
+        if not agents:
+            console.print("[dim]No agents registered.[/dim]")
+            return
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("ID")
+        table.add_column("Name")
+        table.add_column("Tier")
+        table.add_column("Staff")
+        table.add_column("Status")
+        for a in agents:
+            staff = "[green]yes[/green]" if a.get("is_staff") else "[dim]no[/dim]"
+            table.add_row(str(a["id"]), a["name"], str(a["tier"]), staff, a["status"])
+        console.print(table)
+
+    elif action == "promote":
+        if not agent_id:
+            raise typer.BadParameter("--id is required for promote")
+        if tier is None:
+            raise typer.BadParameter("--tier is required for promote")
+        try:
+            result = client.admin_set_tier(agent_id, tier)
+        except Exception as err:
+            console.print(f"[bold red]✗[/bold red] Promote failed: {err}")
+            raise typer.Exit(code=1) from err
+        console.print(f"[bold green]✓[/bold green] Agent {agent_id} set to tier {result['tier']}.")
+
+    elif action in ("staff", "unstaff"):
+        if not agent_id:
+            raise typer.BadParameter("--id is required")
+        try:
+            result = client.admin_set_staff(agent_id, action == "staff")
+        except Exception as err:
+            console.print(f"[bold red]✗[/bold red] Staff toggle failed: {err}")
+            raise typer.Exit(code=1) from err
+        console.print(f"[bold green]✓[/bold green] Agent {agent_id} is_staff={result['is_staff']}.")
 
 
 if __name__ == "__main__":
-    cli()
+    app()

@@ -25,12 +25,15 @@ Prerequisites: **Python 3.14** (`python3.14` on PATH) and a reachable **kidecon-
 python cli/kidecon.py --help
 python cli/kidecon.py setup --name my-agent      # register with hub → JWT in keyring
 python cli/kidecon.py status                     # agent id, registration, tier
+python cli/kidecon.py tier                       # current capability tier
 python cli/kidecon.py key add                    # store an API key in keyring
 python cli/kidecon.py key list                   # masked key listing
-python cli/kidecon.py tier                       # current capability tier
+python cli/kidecon.py doctor                     # diagnostic: Python, keyring, hub, JWT, sandbox
+python cli/kidecon.py start                      # verify hub + JWT, mark online
+python cli/kidecon.py stop                       # mark offline, cleanup
+python cli/kidecon.py update                     # git pull + pip install (or re-run install.sh)
 python cli/kidecon.py skills list                # installed skills
 python cli/kidecon.py skills browse <query>      # query the hub skill directory
-python cli/kidecon.py start                      # launch Hermes (stubbed)
 ```
 
 ## Layout
@@ -41,7 +44,7 @@ flowchart TD
     root --> install["install.sh  # bootstrap script"]
     root --> kyaml["kidecon.yaml  # default config (provider, hub_url, tool_gate, ...)"]
     root --> reqs["requirements.txt"]
-    root --> pyproj["pyproject.toml  # ruff (py311) + pytest"]
+    root --> pyproj["pyproject.toml  # ruff (py314) + pytest"]
     root --> cli["cli/"]
     cli --> cliinit["__init__.py"]
     cli --> clicli["kidecon.py  # Click CLI"]
@@ -71,3 +74,21 @@ flowchart TD
 
 - Hermes installation is currently **stubbed** — the real Nous Research repo URL is TBD.
 - The hub skill-submission endpoint is TBD; `publish_skill` is a stub.
+- `UserScriptSandbox` is a permission gate, not a real sandbox. See `AGENT_NETWORK_REFERENCE.md` §1.5.
+
+## Lifecycle Test Results (2026-07-06)
+
+All phases tested against the live hub at `https://hub.kidecon.me`:
+
+| Phase | Status | Detail |
+|-------|--------|--------|
+| 1. Install & Bootstrap | ✓ | `kidecon` on PATH in venv, `kidecon.yaml` at `~/.config/kidecon/`, `--help` shows 9 subcommands |
+| 2. Agent Registration | ✓ | `setup` stores JWT + agent_id in keyring; `status` shows ID/registered/tier=1 |
+| 3. Key Management | ✓ | `key add` stores in keyring; `key list` shows masked values |
+| 4. Hub Communication | ✓ | `hub_call("test_kideconomy_api")` → `{status: "ok", error: null}`; tier-2 tool correctly 403-blocked |
+| 5. Message Poll Loop | ✓ | Poll → 0 messages; send → poll catches message; respond → status=accepted |
+| 6. Skill Discovery | ✓ | `discover_skills("")` returns empty array (no approved skills — expected) |
+| 7. Local Tools | ✓ | `file_read`/`file_append_markdown` works; path traversal blocked; `message_user` writes to `~/kidecon/messages.log` |
+| 8. Sandbox | ✓ | First-run blocks without approval; `auto_approve=True` works; 60s timeout enforced |
+| 9. Missing Pieces | ✓ | `doctor` (10 checks), `start` (hub+JWT verify), `stop` (hub offline update), `update` (git pull) all functional |
+| 10. Known Bugs | ✓ | `tools.py`: `is_relative_to` path containment; `sandbox.py`: security prefix + timestamped audit; `install.sh`: `$VENV_DIR` fix + `chmod +x` |

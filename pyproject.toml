@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-kidecon = "cli.kidecon:cli"
+kidecon = "cli.kidecon:app"
 
 [tool.setuptools.packages.find]
 include = ["cli*", "wrappers*"]
@@ -46,15 +46,24 @@ force-single-line = true
 # the repo's otherwise-strict rule set.
 [tool.ruff.lint.per-file-ignores]
 "cli/kidecon.py" = [
-    "I001",   # import block formatting (templates keep their grouping)
-    "F401",   # unused imports retained for future wiring (subprocess, sys, UserScriptSandbox)
-    "F841",   # jwt assignment kept for clarity of register() return
-    "F541",   # f-string without placeholders in user-facing echo
-    "PTH123", # open() used for config read
-    "ERA001", # commented-out stub wiring kept as a marker
+    "I001",   # sys.path.insert between stdlib and third-party imports
+    "PLC0415",# local imports in CLI commands are lazy-loading for startup perf
+    "C901",   # doctor complexity is acceptable for a flat diagnostic command
+    "PLR0912",# too many branches in doctor (diagnostic command, intentionally flat)
+    "PLR0915",# too many statements in doctor (diagnostic command)
+    "S603",   # subprocess.run on git/pip in update command is intentional
+    "S607",   # partial executable path for git/pip is intentional
+    "TRY003", # typer.Exit/BadParameter messages are CLI validation
+    "EM101",  # string literal in typer validation
     "BLE001", # broad except surfaces connection errors to the user
-    "RUF034", # ternary kept for readability
-    "PLR2004",# magic value 8 in key masking
+    "RUF034", # ternary with redundant condition in keyring key resolution
+    "PLR2004",# magic values for key masking (8) and HTTP status codes (200, 500)
+    "S105",   # "pass" string variable name is a false positive (not a password)
+    "E501",   # long f-strings are user-facing prose
+    "FBT001", # Typer boolean Option flags (--no-color, --no-splash)
+    "FBT003", # Typer Option(False, ...) boolean defaults
+    "PLW0603",# global console reassignment on --no-color is intentional
+    "PLR0913",# Typer command with many options (skills submit) is flat by design
 ]
 "wrappers/hub_client.py" = [
     "TRY003", # long exception messages are intentional guidance

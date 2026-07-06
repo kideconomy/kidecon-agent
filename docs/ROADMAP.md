@@ -3,7 +3,7 @@
 **Status:** Implementation-Ready
 **Date:** 2026-07-04
 **Repo:** `/home/solvire/Documents/projects/kidecon/source/kidecon-agent/`
-**Stack:** Python 3.11 + httpx + keyring + PyYAML + Click CLI + bash install script
+**Stack:** Python 3.14 + httpx + keyring + PyYAML + Click CLI + bash install script
 
 ---
 
@@ -87,7 +87,7 @@ KidEconomy Agent is the user-facing, public repo. A thin CLI wrapper and Python 
 | HTTP client | httpx | Async-capable, modern, works with FastAPI ecosystem |
 | Secret storage | keyring (OS-native) | Cross-platform, secure, no plaintext secrets on disk |
 | Config format | YAML (kidecon.yaml) | Human-readable, per spec |
-| Python | 3.11 | Consistent with kidecon-hub |
+| Python | 3.14 | Consistent with AGENTS.md |
 | Hermes install | pip install from git (stubbed) | Nous Research repo URL is a placeholder — real URL TBD |
 | No pre-commit | Skipped | Thin repo, minimal Python. Add later if needed. |
 | No mypy | Skipped | Thin repo. Add later if needed. |
