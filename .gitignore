@@ -1,0 +1,107 @@
+### Python template
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# pyenv
+.python-version
+
+# Environments
+.venv/
+.venv
+venv/
+ENV/
+env/
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+
+# pytest
+.pytest_cache/
+
+# ruff
+.ruff_cache/
+
+# Local env (may contain API keys)
+.env
+
+
+### Project-specific
+# Environment files — keys live ONLY here, never committed
+.env
+.envs/*
+
+# Local key material — never commit
+*.key
+
+# User sandbox scripts (created at runtime)
+user_scripts/
+
+# Kilo local state
+.kilo/kilo.json
+.kilo/kilo.jsonc
+.kilo/agent-manager.json
+.kilo/worktrees/
+.kilo/node_modules/
+.kilo/package.json
+.kilo/package-lock.json
+
+# Kilo project config (may contain API keys)
+kilo.json
+kilo.jsonc
+
+# detect-secrets baseline (tracks known dev-only secrets locally; never commit)
+.secrets.baseline
