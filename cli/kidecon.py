@@ -3,6 +3,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import contextlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
@@ -118,7 +119,23 @@ def load_config() -> dict:
 
 def hub_client() -> HubClient:
     config = load_config()
-    return HubClient(hub_url=config["hub_url"])
+    return HubClient(
+        hub_url=config["hub_url"],
+        kideconomy_api_url=config.get("kideconomy_api_url", ""),
+    )
+
+
+def require_auth() -> HubClient:
+    """Guard for commands that need a registered agent.
+
+    Returns an authenticated HubClient or exits with an error if
+    no JWT is found in the keyring.
+    """
+    client = hub_client()
+    if not client.jwt:
+        console.print("[bold red]✗[/bold red] Not registered. Run [bold]kidecon setup[/bold] first.")
+        raise typer.Exit(code=1)
+    return client
 
 
 # ------------------------------------------------------------------
@@ -127,17 +144,22 @@ def hub_client() -> HubClient:
 @app.command()
 def init(
     hub: str = typer.Option(
-        "http://localhost:8000", "--hub", help="Hub URL (default: http://localhost:8000)",
+        "https://hub.kidecon.me", "--hub", help="Hub URL (default: https://hub.kidecon.me)",
+    ),
+    kideconomy_api: str = typer.Option(
+        "https://kidecon.me", "--kideconomy-api",
+        help="KidEconomy app URL (default: https://kidecon.me)",
     ),
 ):
     """Initialize the agent config for a hub environment.
 
-    Writes the hub URL to ~/.config/kidecon/kidecon.yaml and clears any
-    existing registration so you can register fresh against the new hub.
+    Writes config to ~/.config/kidecon/kidecon.yaml and clears any
+    existing registration so you can register fresh.
 
     Examples:
-        kidecon init                       # local development
-        kidecon init --hub https://hub.kidecon.me  # production
+        kidecon init                                        # local dev
+        kidecon init --hub https://hub.kidecon.me \\
+                     --kideconomy-api https://kidecon.me   # production
     """
     import yaml as _yaml
 
@@ -147,6 +169,7 @@ def init(
 
     defaults = {
         "hub_url": hub,
+        "kideconomy_api_url": kideconomy_api,
         "provider": "openrouter",
         "tool_gate": {
             "allow": [
@@ -165,13 +188,15 @@ def init(
 
     config_path.write_text(_yaml.dump(defaults, default_flow_style=False))
     console.print(f"[bold green]✓[/bold green] Config written: {config_path}")
-    console.print(f"  [bold cyan]Hub URL:[/bold cyan] {hub}")
+    console.print(f"  [bold cyan]Hub URL:[/bold cyan]          {hub}")
+    console.print(f"  [bold cyan]KidEconomy URL:[/bold cyan]   {kideconomy_api}")
 
     local_config = pathlib.Path("kidecon.yaml")
     if local_config.exists():
         content = local_config.read_text()
         updated = _yaml.safe_load(content) or {}
         updated["hub_url"] = hub
+        updated["kideconomy_api_url"] = kideconomy_api
         local_config.write_text(_yaml.dump(updated, default_flow_style=False))
         console.print(f"[bold green]✓[/bold green] Local config updated: {local_config.resolve()}")
 
@@ -191,19 +216,72 @@ def init(
 # ------------------------------------------------------------------
 @app.command()
 def setup(
-    name: str = typer.Option(..., "--name", prompt="Agent name", help="Human-readable name for this agent (e.g. walkthrough-agent)"),
+    agent_display_name: str = typer.Option(
+        ..., "--agent-display-name", prompt="Agent display name (e.g. johnnys-laptop)",
+        help="Display label for this agent instance — NOT your username. "
+             "Use something that identifies the machine or purpose "
+             "(e.g. johnnys-laptop, ci-runner, dev-agent).",
+    ),
+    ke_username: str = typer.Option(
+        None, "--ke-username",
+        help="Your KidEconomy username (prompts if not provided). "
+             "This is the account that owns this agent.",
+    ),
 ):
     """Register this agent with the hub.
 
-    Creates a unique agent ID and JWT token stored in your OS keyring.
-    The agent name is a display label — choose something descriptive.
+    Authenticates against KidEconomy using your username and password,
+    then registers the agent with the hub. The hub verifies your KidEconomy
+    token and links this agent to your account. Your password is never
+    stored — it's used once to get a DRF token and then discarded.
+
+    Examples:
+        kidecon setup --agent-display-name my-laptop
+        kidecon setup --agent-display-name my-laptop --ke-username johnny
     """
+    import getpass
+
     config = load_config()
-    client = HubClient(hub_url=config["hub_url"])
-    client.register(name=name, platform="cli")
-    console.print("[bold green]✓[/bold green] Agent registered. JWT stored in keyring.")
-    console.print(f"  [bold cyan]Agent ID:[/bold cyan] {client.agent_id}")
-    console.print(f"  [bold cyan]Hub:[/bold cyan]      {config['hub_url']}")
+    ke_api_url = config.get("kideconomy_api_url", "")
+    if not ke_api_url:
+        console.print("[bold red]✗[/bold red] KidEconomy API URL not configured.")
+        console.print("  Run [bold]kidecon init[/bold] first.")
+        raise typer.Exit(code=1)
+
+    client = HubClient(
+        hub_url=config["hub_url"],
+        kideconomy_api_url=ke_api_url,
+    )
+
+    if not ke_username:
+        ke_username = typer.prompt("KidEconomy username")
+
+    password = getpass.getpass("KidEconomy password: ")
+
+    console.print(f"[dim]Authenticating against KidEconomy ({ke_api_url})...[/dim]")
+    try:
+        ke_token = client.fetch_ke_token(ke_username, password)
+    except Exception as err:
+        console.print(f"[bold red]✗[/bold red] KidEconomy authentication failed: {err}")
+        raise typer.Exit(code=1) from err
+    finally:
+        del password
+
+    console.print(f"[dim]Registering agent with hub ({config['hub_url']})...[/dim]")
+    try:
+        client.register(name=agent_display_name, ke_token=ke_token)
+    except Exception as err:
+        console.print(f"[bold red]✗[/bold red] Hub registration failed: {err}")
+        raise typer.Exit(code=1) from err
+
+    console.print()
+    console.print("[bold green]✓[/bold green] Agent registered and linked to KidEconomy account.")
+    console.print(f"  [bold cyan]Agent ID:[/bold cyan]        {client.agent_id}")
+    console.print(f"  [bold cyan]KE user:[/bold cyan]        {ke_username}")
+    console.print(f"  [bold cyan]Hub:[/bold cyan]            {config['hub_url']}")
+    console.print(f"  [bold cyan]KidEconomy:[/bold cyan]     {ke_api_url}")
+    console.print()
+    console.print("JWT stored in keyring. Run [bold]kidecon status[/bold] to verify.")
 
 
 # ------------------------------------------------------------------
@@ -218,7 +296,6 @@ def start():
 
     config = load_config()
     hub_url = config["hub_url"]
-    client = HubClient(hub_url=hub_url)
 
     try:
         r = httpx.get(f"{hub_url}/", timeout=5.0)
@@ -227,9 +304,7 @@ def start():
         console.print(f"[bold red]✗[/bold red] Hub unreachable at {hub_url}")
         raise typer.Exit(code=1) from err
 
-    if not client.jwt:
-        console.print("[bold red]✗[/bold red] Not registered. Run '[bold]kidecon setup[/bold]' first.")
-        raise typer.Exit(code=1)
+    client = require_auth()
 
     try:
         tier = client.get_tier()
@@ -249,9 +324,8 @@ def start():
 @app.command()
 def stop():
     """Graceful shutdown — marks agent offline on hub and cleans up."""
+    client = require_auth()
     try:
-        config = load_config()
-        client = HubClient(hub_url=config["hub_url"])
         client.update_status("offline")
         console.print("[bold green]✓[/bold green] Agent marked offline on hub.")
     except Exception:
@@ -264,18 +338,20 @@ def stop():
 @app.command()
 def status():
     """Check if agent is running and connected to hub."""
+    client = require_auth()
     try:
-        config = load_config()
-        client = HubClient(hub_url=config["hub_url"])
         tier = client.get_tier()
-        jwt = keyring.get_password(KEYRING_SERVICE, KEY_JWT)
-        agent_id = keyring.get_password(KEYRING_SERVICE, KEY_AGENT_ID)
     except Exception as err:
-        console.print(f"[bold red]✗[/bold red] Not connected: {err}")
+        console.print(f"[bold red]✗[/bold red] JWT invalid or expired: {err}")
         raise typer.Exit(code=1) from err
 
+    agent_id = keyring.get_password(KEYRING_SERVICE, KEY_AGENT_ID)
+    ke_username = keyring.get_password(KEYRING_SERVICE, "kideconomy_username")
+    config = load_config()
+
     console.print(f"[bold cyan]Agent ID:[/bold cyan]     {agent_id or '(not set)'}")
-    console.print(f"[bold cyan]Registered:[/bold cyan]   {'yes' if jwt else 'no'}")
+    console.print(f"[bold cyan]KE user:[/bold cyan]      {ke_username or '(none)'}")
+    console.print("[bold cyan]Registered:[/bold cyan]   yes")
     console.print(f"[bold cyan]Tier:[/bold cyan]        {tier}")
     console.print(f"[bold cyan]Hub:[/bold cyan]         {config['hub_url']}")
 
@@ -286,8 +362,8 @@ def status():
 @app.command()
 def tier():
     """Show current capability tier."""
+    client = require_auth()
     try:
-        client = hub_client()
         console.print(f"[bold cyan]Current tier:[/bold cyan] {client.get_tier()}")
     except Exception as err:
         console.print(f"[bold red]✗[/bold red] Could not read tier: {err}")
@@ -343,6 +419,36 @@ _key_app = typer.Typer(help="Manage API keys in keyring.")
 app.add_typer(_key_app, name="key", help="Manage API keys in keyring.")
 
 
+KEYS_INDEX_PATH = pathlib.Path.home() / ".config" / "kidecon" / "keys.json"
+
+
+def _load_key_index() -> list[str]:
+    """Load the list of user-added API key names from the index file."""
+    if KEYS_INDEX_PATH.exists():
+        import json
+
+        return json.loads(KEYS_INDEX_PATH.read_text())
+    return []
+
+
+def _save_key_index(names: list[str]) -> None:
+    KEYS_INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    import json
+
+    KEYS_INDEX_PATH.write_text(json.dumps(sorted(set(names)), indent=2))
+
+
+INTERNAL_KEYS = ["hub_jwt", "agent_id", "kideconomy_username"]
+
+
+def _mask(value: str | None) -> str:
+    if value and len(value) > 8:
+        return f"{value[:4]}...{value[-4:]}"
+    if value:
+        return "***"
+    return "(not set)"
+
+
 @_key_app.callback()
 def key_main(
     no_color: bool = typer.Option(False, "--no-color", help="Disable color and rich formatting."),
@@ -357,24 +463,38 @@ def key_add(
     value: str = typer.Option(..., "--value", prompt="API key value", hide_input=True, help="The API key"),
 ):
     keyring.set_password(KEYRING_SERVICE, f"api_key_{name}", value)
+    names = _load_key_index()
+    if name not in names:
+        names.append(name)
+        _save_key_index(names)
     console.print(f"[bold green]✓[/bold green] Key '[bold]{name}[/bold]' stored.")
+
+
+@_key_app.command("remove")
+def key_remove(
+    name: str = typer.Option(..., "--name", prompt="Key name to remove", help="Name of the API key to remove"),
+):
+    with contextlib.suppress(Exception):
+        keyring.delete_password(KEYRING_SERVICE, f"api_key_{name}")
+    names = _load_key_index()
+    if name in names:
+        names.remove(name)
+        _save_key_index(names)
+    console.print(f"[bold green]✓[/bold green] Key '[bold]{name}[/bold]' removed.")
 
 
 @_key_app.command("list")
 def key_list():
-    known = ["openrouter", "hub_jwt", "agent_id"]
+    api_keys = _load_key_index()
     table = Table(show_header=True, header_style="bold")
     table.add_column("Name")
     table.add_column("Value", overflow="fold")
-    for k in known:
-        v = keyring.get_password(KEYRING_SERVICE, k if k.startswith("api_key_") else k)
-        if v and len(v) > 8:
-            masked = f"{v[:4]}...{v[-4:]}"
-        elif v:
-            masked = "***"
-        else:
-            masked = "(not set)"
-        table.add_row(k, masked)
+    for k in INTERNAL_KEYS:
+        v = keyring.get_password(KEYRING_SERVICE, k)
+        table.add_row(k, _mask(v))
+    for k in api_keys:
+        v = keyring.get_password(KEYRING_SERVICE, f"api_key_{k}")
+        table.add_row(k, _mask(v))
     console.print(table)
 
 
@@ -404,7 +524,7 @@ def skills_discover(
 ):
     """Query hub skill directory."""
     try:
-        client = hub_client()
+        client = require_auth()
         results = client.discover_skills(query or "")
     except Exception as err:
         console.print(f"[bold red]✗[/bold red] Discovery failed: {err}")
@@ -463,7 +583,7 @@ def skills_submit(
             description = typer.prompt("Description")
 
     try:
-        client = hub_client()
+        client = require_auth()
         result = client.submit_skill(name, version, category, description, definition or None)
     except Exception as err:
         console.print(f"[bold red]✗[/bold red] Submission failed: {err}")
@@ -483,7 +603,7 @@ def skills_mine(
 ):
     """List my submitted skills."""
     try:
-        client = hub_client()
+        client = require_auth()
         skills = client.my_skills(status)
     except Exception as err:
         console.print(f"[bold red]✗[/bold red] Could not list skills: {err}")
@@ -518,7 +638,7 @@ def skills_inspect(
 ):
     """Show full evaluation detail for a submitted skill."""
     try:
-        client = hub_client()
+        client = require_auth()
         skills = client.my_skills()
     except Exception as err:
         console.print(f"[bold red]✗[/bold red] Could not fetch skills: {err}")
@@ -640,7 +760,7 @@ def skills_guide(
 # ------------------------------------------------------------------
 @app.command()
 def doctor():
-    """Diagnose agent health — Python, keyring, hub, JWT, sandbox."""
+    """Diagnose agent health — Python, keyring, config, hub, keys, sandbox."""
     import platform
     from datetime import UTC
     from datetime import datetime
@@ -658,6 +778,12 @@ def doctor():
 
     def _add(group, label, status, detail, hint=""):
         results.append((group, label, status, detail, hint))
+
+    # Keys required for the agent to operate.
+    # Each entry: (keyring_name, description, required)
+    required_keys: list[tuple[str, str, bool]] = [
+        ("openrouter", "LLM inference via OpenRouter", True),
+    ]
 
     py_ver = platform.python_version()
     py_ok = tuple(int(x) for x in py_ver.split(".")) >= (3, 11)
@@ -683,7 +809,7 @@ def doctor():
             hub_url = None
     else:
         _add("Environment", "Config", "fail", "not found",
-             "Run `bash install.sh` to place ~/.config/kidecon/kidecon.yaml")
+             "Run `kidecon init` to create ~/.config/kidecon/kidecon.yaml")
         hub_url = None
 
     if hub_url:
@@ -700,26 +826,54 @@ def doctor():
         jwt = keyring.get_password(KEYRING_SERVICE, KEY_JWT)
         if jwt:
             try:
-                client = HubClient(hub_url=hub_url)
+                client = HubClient(
+                    hub_url=hub_url,
+                    kideconomy_api_url=config.get("kideconomy_api_url", ""),
+                )
                 tier_val = client.get_tier()
                 _add("Hub", "JWT", "pass", f"valid (tier {tier_val})")
             except Exception as e:
                 _add("Hub", "JWT", "fail", str(e),
-                     "Re-register with `kidecon setup --name <name>`")
+                     "Re-register with `kidecon setup`")
         else:
             _add("Hub", "JWT", "fail", "not set",
-                 "Register with `kidecon setup --name <name>`")
+                 "Register with `kidecon setup`")
 
         agent_id = keyring.get_password(KEYRING_SERVICE, KEY_AGENT_ID)
         if agent_id:
             _add("Hub", "Agent ID", "pass", agent_id)
         else:
             _add("Hub", "Agent ID", "fail", "not set",
-                 "Run `kidecon setup --name <name>` to generate")
+                 "Run `kidecon setup` to generate")
+
+        ke_user = keyring.get_password(KEYRING_SERVICE, "kideconomy_username")
+        if ke_user:
+            _add("Hub", "KE username", "pass", ke_user)
+        else:
+            _add("Hub", "KE username", "fail", "not set",
+                 "Run `kidecon setup` to link your KidEconomy account")
     else:
         _add("Hub", "Reachable", "warn", "skipped (no config)", "Fix config first")
         _add("Hub", "JWT", "warn", "skipped")
         _add("Hub", "Agent ID", "warn", "skipped")
+
+    for key_name, description, required in required_keys:
+        v = keyring.get_password(KEYRING_SERVICE, f"api_key_{key_name}")
+        if v:
+            _add("Keys", key_name, "pass", description)
+        elif required:
+            _add("Keys", key_name, "fail", f"required — {description}",
+                 f"Run: kidecon key add --name {key_name} --value <your-key>")
+        else:
+            _add("Keys", key_name, "warn", f"optional — {description}")
+
+    api_keys = _load_key_index()
+    for key_name in api_keys:
+        if key_name in [k for k, _, _ in required_keys]:
+            continue
+        v = keyring.get_password(KEYRING_SERVICE, f"api_key_{key_name}")
+        _add("Keys", key_name, "pass" if v else "warn",
+             "user-added" if v else "indexed but missing")
 
     messages_log = Path.home() / "kidecon" / "messages.log"
     if messages_log.exists():
@@ -748,7 +902,7 @@ def doctor():
          "" if ws_exists else "Run `mkdir -p ~/kidecon/workspace` to create")
 
     counts = {"pass": 0, "fail": 0, "warn": 0}
-    order = ["Environment", "Hub", "Sandbox"]
+    order = ["Environment", "Hub", "Keys", "Sandbox"]
     for group in order:
         rows = [r for r in results if r[0] == group]
         if not rows:
@@ -809,7 +963,7 @@ def admin_skills(
     reason: str = typer.Option(None, "--reason", help="Rejection reason (required for reject)"),
 ):
     """Manage skills: pending (list), approve, reject."""
-    client = hub_client()
+    client = require_auth()
 
     if action == "pending":
         try:
@@ -860,7 +1014,7 @@ def admin_agents(
     tier: int = typer.Option(None, "--tier", help="Tier level (required for promote)"),
 ):
     """Manage agents: list, promote (set tier), staff/unstaff (toggle staff flag)."""
-    client = hub_client()
+    client = require_auth()
 
     if action == "list":
         try:

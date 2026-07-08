@@ -9,11 +9,17 @@ logger = logging.getLogger(__name__)
 KEYRING_SERVICE = "kidecon-agent"
 KEY_JWT = "hub_jwt"
 KEY_AGENT_ID = "agent_id"
+KEY_KE_USERNAME = "kideconomy_username"
 
 
 class HubClient:
-    def __init__(self, hub_url: str = "http://localhost:8000"):
+    def __init__(
+        self,
+        hub_url: str = "http://localhost:8000",
+        kideconomy_api_url: str = "",
+    ):
         self.hub_url = hub_url.rstrip("/")
+        self.kideconomy_api_url = kideconomy_api_url.rstrip("/")
         self.agent_id = self._get_or_create_agent_id()
         self.jwt = self._get_jwt()
 
@@ -27,10 +33,42 @@ class HubClient:
     def _get_jwt(self) -> str | None:
         return keyring.get_password(KEYRING_SERVICE, KEY_JWT)
 
-    def register(self, name: str, platform: str = "cli") -> str:
+    def fetch_ke_token(self, username: str, password: str) -> str:
+        """Authenticate against KidEconomy and return a DRF token.
+
+        The password is used here and discarded — never stored.
+        """
+        if not self.kideconomy_api_url:
+            raise RuntimeError(
+                "KidEconomy API URL not configured. Run 'kidecon init' first.",
+            )
+        response = httpx.post(
+            f"{self.kideconomy_api_url}/api/auth-token/",
+            json={"username": username, "password": password},
+            timeout=15,
+        )
+        response.raise_for_status()
+        token = response.json()["token"]
+        keyring.set_password(KEYRING_SERVICE, KEY_KE_USERNAME, username)
+        return token
+
+    def register(
+        self,
+        name: str,
+        ke_token: str | None = None,
+        discord_user_id: str | None = None,
+        platform: str = "cli",
+    ) -> str:
+        payload: dict = {"agent_id": self.agent_id, "name": name, "platform": platform}
+        if ke_token:
+            payload["ke_token"] = ke_token
+        if discord_user_id:
+            payload["discord_user_id"] = discord_user_id
+
         response = httpx.post(
             f"{self.hub_url}/api/register_agent",
-            json={"agent_id": self.agent_id, "name": name, "platform": platform},
+            json=payload,
+            timeout=15,
         )
         response.raise_for_status()
         data = response.json()
