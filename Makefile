@@ -48,3 +48,22 @@ clean:  ## Remove caches and build artifacts
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name '*.pyc' -delete
 	rm -rf *.egg-info dist build
+
+# ------------------------------------------------------------------
+# Sync shared LLM clients from kidecon-hub (canonical source)
+# ------------------------------------------------------------------
+
+LLM_CLIENTS_CANONICAL = ../kidecon-hub/shared/llm_clients
+LLM_CLIENTS_LOCAL = shared/llm_clients
+
+.PHONY: sync-llm check-llm-sync
+
+sync-llm:  ## Pull shared LLM library from kidecon-hub (canonical source)
+	@echo "Syncing LLM client library from kidecon-hub..."
+	@mkdir -p $(LLM_CLIENTS_LOCAL)
+	@cp -r $(LLM_CLIENTS_CANONICAL)/* $(LLM_CLIENTS_LOCAL)/
+	@echo "✓ Synced from kidecon-hub/shared/llm_clients/"
+
+check-llm-sync:  ## Verify local copy matches canonical hub source
+	@diff -rq $(LLM_CLIENTS_CANONICAL) $(LLM_CLIENTS_LOCAL) || \
+		(echo "✗ LLM client library is out of sync. Run 'make sync-llm'" && exit 1)

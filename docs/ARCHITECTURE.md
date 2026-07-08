@@ -43,6 +43,9 @@ flowchart TD
 | `wrappers/hub_client.py`   | `HubClient` — registers agent, stores JWT in keyring, calls hub MCP tools, polls/responds to messages, discovers skills, reads tier. |
 | `wrappers/tools.py`        | Approved local tools: `file_read`, `file_append_markdown`, `message_user`. Workspace-scoped via `ALLOWED_BASE_DIR`. |
 | `wrappers/sandbox.py`      | `UserScriptSandbox` — runs user scripts under `~/kidecon/user_scripts/` with 60s timeout + first-run approval gate. |
+| `wrappers/runtime.py`      | Hermes runtime loop — long-polls hub, routes messages through safety firewall and LLM tiers, responds via broker. |
+| `wrappers/safety_firewall.py` | `SafetyFirewall` — synchronous ingress/egress safety interceptor for Discord traffic using a paid Llama-3-8B model. Fail-closed. |
+| `shared/llm_clients/`      | **Vendored copy** from kidecon-hub. Multi-provider LLM abstraction (OpenRouter, Together, DeepSeek). **DO NOT EDIT HERE.** Canonical source is in `kidecon-hub/shared/llm_clients/`. Run `make sync-llm` to pull changes. |
 | `cli/__init__.py`          | Package marker; logger.                                                            |
 | `cli/kidecon.py`           | Click CLI: `setup`, `start`, `stop`, `status`, `update`, `key` (add/list), `tier`, `skills` (list/browse). Thin orchestration only. |
 | `install.sh`               | Bootstrap: venv, deps, place config, prompt OpenRouter key → keyring, install Hermes (stubbed), register agent → JWT → keyring. |
@@ -54,7 +57,7 @@ flowchart TD
 
 1. **Install** (`install.sh`): creates `env/`, installs deps, copies `kidecon.yaml` to `~/.config/kidecon/`, prompts for OpenRouter key -> keyring, runs `kidecon setup`.
 2. **Register** (`kidecon setup`): `HubClient.register()` POSTs to `/api/register_agent`, stores JWT + agent_id in keyring.
-3. **Run** (`kidecon start`): launches Hermes with KidEconomy config (stubbed).
+3. **Run** (`kidecon start`): enters the Hermes runtime loop — pulls MCP manifest from hub, long-polls for messages, routes each message through ingress safety → LLM (with dynamic tier selection) → egress safety → respond. Handles SIGINT/SIGTERM (mark offline), 401 (prompt re-register), and network dropouts (exponential backoff).
 4. **Tool call**: agent invokes an allowed tool — local (`wrappers/tools.py`) or hub (`HubClient.hub_call()` via `/api/mcp/call`).
 5. **User script**: `UserScriptSandbox.execute()` runs a script from `~/kidecon/user_scripts/`; first run requires approval (recorded in `~/kidecon/.approved_scripts`); 60s timeout enforced.
 6. **Messages**: `HubClient.poll_messages()` → `/api/messages/poll`; respond via `/api/messages/{id}/respond`; send via `/api/messages/send`.
@@ -73,3 +76,20 @@ No secret is ever written to disk or logged. `kidecon key list` masks all values
 - **Tool gate** (`kidecon.yaml` `tool_gate`): `allow` / `deny` / `require_approval` lists gate every tool invocation.
 - **Workspace scoping**: `wrappers/tools.py` resolves paths and rejects anything escaping `~/kidecon/workspace`.
 - **Sandbox isolation**: scripts run in `~/kidecon/user_scripts/` only, 60s timeout, no shell interpolation, args passed as a list.
+- **Discord safety firewall**: all `source: discord` messages pass through synchronous ingress and egress safety checks in `wrappers/safety_firewall.py` before Hermes processes or dispatches them.
+
+## Shared LLM Library
+
+`shared/llm_clients/` is a **vendored copy** from `kidecon-hub`. The canonical source lives in the hub repo. The sync direction is strictly one-way: **hub → agent**.
+
+```
+kidecon-hub/shared/llm_clients/  ←  CANONICAL. Edit here.
+        │
+        └── make sync-llm ──→  kidecon-agent/shared/llm_clients/  ←  READ-ONLY COPY
+```
+
+**DO NOT EDIT the agent copy.** Agent engineers who discover a bug or need to add a provider must:
+1. Go to `kidecon-hub/shared/llm_clients/`
+2. Make the change there
+3. Run `make sync-llm` in the hub (or `make sync-llm` in the agent to pull)
+4. Run `make check-llm-sync` to verify both repos match

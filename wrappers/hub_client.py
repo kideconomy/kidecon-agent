@@ -90,13 +90,25 @@ class HubClient:
         response.raise_for_status()
         return response.json()
 
-    def poll_messages(self) -> list[dict]:
+    def poll_messages(self, wait: int = 30) -> list[dict]:
         response = httpx.get(
             f"{self.hub_url}/api/messages/poll",
+            params={"wait": wait} if wait else None,
             headers=self._auth_headers(),
+            timeout=wait + 10.0 if wait else 10.0,
         )
         response.raise_for_status()
         return response.json().get("messages", [])
+
+    def discover_manifest(self) -> list[dict]:
+        """Fetch the MCP tool manifest from the hub."""
+        response = httpx.get(
+            f"{self.hub_url}/api/mcp/manifest",
+            headers=self._auth_headers(),
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        return response.json().get("tools", [])
 
     def respond_to_message(
         self,

@@ -21,7 +21,7 @@ dependencies = [
 kidecon = "cli.kidecon:app"
 
 [tool.setuptools.packages.find]
-include = ["cli*", "wrappers*"]
+include = ["cli*", "wrappers*", "shared*"]
 
 [tool.ruff]
 target-version = "py314"
@@ -81,6 +81,25 @@ force-single-line = true
 "wrappers/tools.py" = [
     "TRY003", # long exception messages are intentional guidance
     "EM102",  # f-string literal in PermissionError
+]
+"wrappers/runtime.py" = [
+    "PLC0415",# lazy imports (keyring, KEYRING_SERVICE) inside run_forever to avoid circular imports
+    "BLE001", # broad except for network/status resilience in runtime loop
+    "TRY003", # long log messages are operational diagnostics
+    "EM101",  # string literal in ValueError
+    "E501",   # long f-strings are logging prose
+    "UP037",  # quoted annotations required for TYPE_CHECKING imports
+]
+"wrappers/safety_firewall.py" = [
+    "BLE001", # broad except is fail-closed safety behavior
+    "UP037",  # quoted annotations required for TYPE_CHECKING imports
+]
+"tests/*.py" = [
+    "BLE001", # broad except in test helpers
+    "SLF001", # testing private attributes is expected
+    "PLR2004",# magic values in assertions are test data
+    "ARG002", # unused fixture args are injected by pytest
+    "E501",   # test assertion lines can be long
 ]
 
 [tool.pytest.ini_options]
