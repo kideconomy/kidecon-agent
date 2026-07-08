@@ -47,9 +47,8 @@ class DeepSeekProvider(BaseLLMProvider):
             resp = httpx.post(url, json=payload, headers=self._headers(), timeout=_TIMEOUT)
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            msg = f"DeepSeek HTTP {exc.response.status_code}: {exc.response.text}"
-            logger.exception(msg)
-            raise LLMProviderError(msg) from exc
+            logger.exception("DeepSeek HTTP %d (body omitted — may contain prompt data)", exc.response.status_code)
+            raise LLMProviderError(f"DeepSeek HTTP {exc.response.status_code}") from exc
         except httpx.RequestError as exc:
             msg = f"DeepSeek request error: {exc}"
             logger.exception(msg)

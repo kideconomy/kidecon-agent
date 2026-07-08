@@ -7,8 +7,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-INGRESS_CANNED = "I can't process that message. Please try rephrasing your question."
-EGRESS_CANNED = "I encountered an issue generating a safe response. Please try again."
+INGRESS_CANNED = (
+    "I can't process that message. Reason: inbound content was blocked by the safety filter ({reason}). Please try rephrasing your question."
+)
+EGRESS_CANNED = (
+    "I encountered an issue generating a safe response. Reason: the response was blocked by the safety filter ({reason}). Please try asking differently."
+)
 
 SAFETY_SCHEMA: dict[str, Any] = {
     "name": "safety_check",

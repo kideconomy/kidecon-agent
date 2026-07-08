@@ -34,9 +34,8 @@ class TogetherProvider(BaseLLMProvider):
                 temperature=temperature,
             )
         except Exception as exc:
-            msg = f"Together AI error: {exc}"
-            logger.exception(msg)
-            raise LLMProviderError(msg) from exc
+            logger.exception("Together AI error (body omitted): %s", type(exc).__name__)
+            raise LLMProviderError(f"Together AI error: {type(exc).__name__}") from exc
 
         try:
             return result.choices[0].message.content

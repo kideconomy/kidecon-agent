@@ -166,7 +166,7 @@ def _process_message(  # noqa: PLR0913
         safe, reason = safety.check_ingress(text)
         if not safe:
             logger.warning("Ingress blocked: %s (msg=%s)", reason, msg_id)
-            client.respond_to_message(msg_id, accepted=True, result={"text": INGRESS_CANNED})
+            client.respond_to_message(msg_id, accepted=True, result={"text": INGRESS_CANNED.format(reason=reason)})
             return
 
     # Tier resolution and model selection
@@ -188,7 +188,7 @@ def _process_message(  # noqa: PLR0913
         safe, reason = safety.check_egress(result)
         if not safe:
             logger.warning("Egress blocked: %s (msg=%s)", reason, msg_id)
-            result = EGRESS_CANNED
+            result = EGRESS_CANNED.format(reason=reason)
 
     client.respond_to_message(msg_id, accepted=True, result={"text": result})
 

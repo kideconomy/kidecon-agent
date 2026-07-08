@@ -149,7 +149,7 @@ class TestSafetyIntegration:
 
         mock_factory.complete.assert_not_called()
         respond_call = mock_client.respond_to_message.call_args
-        assert respond_call[1]["result"]["text"] == INGRESS_CANNED
+        assert respond_call[1]["result"]["text"] == INGRESS_CANNED.format(reason="jailbreak attempt")
 
     def test_egress_unsafe_replaces_result(self, mock_client, config, mock_factory):
         mock_factory.complete_structured.side_effect = [
@@ -162,7 +162,7 @@ class TestSafetyIntegration:
         _run_one_cycle(mock_client, config, mock_factory, [msg])
 
         respond_call = mock_client.respond_to_message.call_args
-        assert respond_call[1]["result"]["text"] == EGRESS_CANNED
+        assert respond_call[1]["result"]["text"] == EGRESS_CANNED.format(reason="unsafe content")
 
     def test_non_discord_skips_safety(self, mock_client, config, mock_factory):
         """Messages from non-discord sources skip safety checks."""

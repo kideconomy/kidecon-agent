@@ -50,9 +50,8 @@ class OpenRouterProvider(BaseLLMProvider):
         try:
             result = self.client.chat.send(**send_kwargs)
         except Exception as exc:
-            msg = f"OpenRouter error: {exc}"
-            logger.exception(msg)
-            raise LLMProviderError(msg) from exc
+            logger.exception("OpenRouter error (body omitted — may contain prompt data): %s", type(exc).__name__)
+            raise LLMProviderError(f"OpenRouter error: {type(exc).__name__}") from exc
 
         try:
             return result.choices[0].message.content
@@ -87,9 +86,8 @@ class OpenRouterProvider(BaseLLMProvider):
                 response_format=response_format,
             )
         except Exception as exc:
-            msg = f"OpenRouter structured error: {exc}"
-            logger.exception(msg)
-            raise LLMProviderError(msg) from exc
+            logger.exception("OpenRouter structured error (body omitted): %s", type(exc).__name__)
+            raise LLMProviderError(f"OpenRouter structured error: {type(exc).__name__}") from exc
 
         try:
             raw = result.choices[0].message.content
