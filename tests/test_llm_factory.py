@@ -6,13 +6,13 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from shared.llm_clients import BaseLLMProvider
-from shared.llm_clients import DeepSeekProvider
-from shared.llm_clients import LLMClientFactory
-from shared.llm_clients import LLMProviderError
-from shared.llm_clients import OpenRouterProvider
-from shared.llm_clients import TierRouter
-from shared.llm_clients import TogetherProvider
+from shared.llm_clients.base import BaseLLMProvider
+from shared.llm_clients.deepseek_provider import DeepSeekProvider
+from shared.llm_clients.factory import LLMClientFactory
+from shared.llm_clients.base import LLMProviderError
+from shared.llm_clients.openrouter_provider import OpenRouterProvider
+from shared.llm_clients.tiers import TierRouter
+from shared.llm_clients.together_provider import TogetherProvider
 
 logger = logging.getLogger(__name__)
 

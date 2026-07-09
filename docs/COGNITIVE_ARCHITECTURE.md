@@ -150,7 +150,7 @@ Per-turn canonical transition: `IDLE -> ORIENT -> [PLAN -> EXECUTE -> REFLECT ->
 **LEARN** -- `learn(reflection) -> None`
 - Append `keep` lines to `MEMORY.md` under a tagged `## [tag]` section; update `memory/.index.json` (`tag -> [[start_line, end_line]]`).
 - Apply `self_edit`: replace the persona/human block bodies if provided and within `*_limit` (truncate-or-reject when over -- R3); append/trim `memory` lines.
-- If `lesson` present and `is_network_useful`: scrub (section 8.1) -> `client.push_lesson(...)` (new `HubClient` method -> hub `POST /api/lessons`). Wrap in `try/except`; a failed push never breaks the turn.
+- If `lesson` present and `is_network_useful`: scrub (section 8.1) -> `client.push_lesson(...)` (new `HubClient` method -> hub `POST /api/lessons`). Wrap in `try/except`; a failed push never breaks the turn. Push is automatic when `auto_push_lessons` is true (default); when false, lessons accumulate locally and the user is prompted on the next human turn. On successful push, write a notice to `messages.log` and surface "Shared 1 lesson with the network" in the next turn's context preamble so the user knows what was shared. Pushed lesson IDs are tracked in `memory/.pushed_lessons.json` so they are not re-pushed.
 - `prompt_improvement` lessons are folded into local `SOUL.md` (LEARN), not pushed.
 
 **RESPOND** -- unchanged from today: egress safety (Discord) -> `client.respond_to_message(...)`. Reflection writes only happen for turns that have already cleared egress.
@@ -244,6 +244,7 @@ Our 4-pillar design ports the patterns. Do not re-evaluate wrapping unless an ed
       discord_<discord_id>.jsonl
     .index.json               # local keyword/tag -> MEMORY.md line-range map
     .adopted_lessons.json     # lesson_ids already adopted (de-dupe pulls)
+    .pushed_lessons.json      # lesson_ids already pushed (de-dupe pushes)
     .last_pull_at             # ISO timestamp of last lesson pull (pull-since cursor)
     .last_dream_at            # ISO timestamp of last dream cycle
   messages.log                # existing
@@ -406,7 +407,7 @@ ORIENT runs **after** ingress safety (ingress stays first, as today). Egress saf
 | **Sandbox** (`wrappers/sandbox.py`) | `user_script` EXECUTE steps (coding tier). Scripts at `~/kidecon/user_scripts/` (`sandbox.py` SCRIPTS_DIR). | None. |
 | **Config** (`kidecon.yaml`) | New keys (section 11). | Append; defaults preserve current behavior. |
 | **Normalizer** (hub `services/normalizer.py` + `system/skill_taxonomy.json`) | Vendored to the edge as `shared/normalizer/` + `shared/lexicon/` (section 10); runs as the ORIENT sidecar. Decomposed into two functions on the edge: `normalize_keyword(raw)` (always, zero LLM) and `normalize_llm_rewrite(raw, model)` (opt-in per tier via shared LLM factory). The hub `normalize.text` MCP tool + skill-eval use `services/normalizer.py` as-is. | New sync target (section 10). |
-| **HubClient** (`wrappers/hub_client.py`) | New methods: `push_lesson`, `pull_lessons`, `adopt_lesson`. | Add methods (interface specified by hub doc section 5 endpoint table). |
+| **HubClient** (`wrappers/hub_client.py`) | New methods: `push_lesson`, `pull_lessons`, `adopt_lesson`, `pull_my_lessons`. | Add methods (interface specified by hub doc section 5 endpoint table). |
 
 ---
 
@@ -465,6 +466,7 @@ cognition:
   dream_idle_cycles: 20         # empty polls before a dream
   dream_retention_days: 14
   auto_adopt_lessons: false     # NEVER auto-adopt; user approves each
+  auto_push_lessons: true        # automatically push lessons to the hub; false = accumulate locally
 normalization:
   llm_rewrite_on: []            # tiers that opt into LLM-rewrite sidecar; default [] keeps daily latency-parity
                                 # e.g. ["strong","coding"] to enable on deep tiers

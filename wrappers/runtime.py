@@ -8,35 +8,18 @@ from typing import Any
 
 import httpx
 
-from shared.llm_clients import LLMClientFactory
-from shared.llm_clients import TierRouter
-from wrappers.safety_firewall import EGRESS_CANNED
-from wrappers.safety_firewall import INGRESS_CANNED
+from shared.llm_clients.factory import LLMClientFactory
+from wrappers.cognition import CognitiveEngine
+from wrappers.memory import MemoryStore
 from wrappers.safety_firewall import SafetyFirewall
+from wrappers.session import SessionStore
 
 if TYPE_CHECKING:
     from wrappers.hub_client import HubClient
 
 logger = logging.getLogger(__name__)
 
-UNCERTAINTY_MARKERS = (
-    "i can't",
-    "i'm unable to",
-    "i don't know",
-    "i am unable",
-    "i cannot",
-    "i'm not able",
-)
-
 _HTTP_UNAUTHORIZED = 401
-
-
-def _has_uncertainty(text: str) -> bool:
-    """Check if the LLM response contains uncertainty markers indicating escalation is needed."""
-    lower = text.lower().strip()
-    if not lower:
-        return True
-    return any(marker in lower for marker in UNCERTAINTY_MARKERS)
 
 
 def _init_llm(config: dict) -> tuple[Any, SafetyFirewall, dict, str, str, float]:
@@ -75,15 +58,47 @@ def _init_llm(config: dict) -> tuple[Any, SafetyFirewall, dict, str, str, float]
     return factory, safety, models, system_prompt, provider_name, max_price
 
 
+def _build_engine(client: "HubClient", config: dict) -> CognitiveEngine:
+    factory, safety, models, system_prompt, provider_name, max_price = _init_llm(config)
+    cognition_config = dict(config.get("cognition", {}))
+    normalization_config = dict(config.get("normalization", {}))
+    memory_dir = config.get("memory_dir")
+    memory = MemoryStore(memory_dir=memory_dir) if memory_dir else MemoryStore()
+    sessions_dir = memory.dir / "sessions"
+    sessions = SessionStore(sessions_dir=sessions_dir, window=cognition_config.get("session_window", 12))
+
+    agent_hub_tier = 1
+    with contextlib.suppress(Exception):
+        raw = client.get_tier()
+        agent_hub_tier = raw if isinstance(raw, int) else int(raw)
+    logger.info("Agent hub tier: %s", agent_hub_tier)
+
+    return CognitiveEngine(
+        factory=factory,
+        safety=safety,
+        models=models,
+        system_prompt=system_prompt,
+        provider_name=provider_name,
+        max_price=max_price,
+        client=client,
+        memory=memory,
+        sessions=sessions,
+        cognition_config=cognition_config,
+        normalization_config=normalization_config,
+        agent_hub_tier=agent_hub_tier,
+    )
+
+
 def run_forever(client: "HubClient", config: dict) -> None:
     """Main Hermes runtime loop.
 
-    1. Boots: pulls MCP manifest, marks online
+    1. Boots: pulls MCP manifest, resolves hub tier, constructs CognitiveEngine
     2. Long-polls for messages with wait=30
-    3. For each message: ingress safety -> tier resolve -> LLM call -> egress safety -> respond
+    3. For each message: engine.process() runs the cognitive cycle
+       (ORIENT -> [PLAN -> EXECUTE -> REFLECT -> LEARN] -> RESPOND)
     4. Handles lifecycle: SIGINT/SIGTERM, network errors, JWT expiry
     """
-    factory, safety, models, system_prompt, provider_name, max_price = _init_llm(config)
+    engine = _build_engine(client, config)
 
     running = True
 
@@ -128,105 +143,11 @@ def run_forever(client: "HubClient", config: dict) -> None:
             continue
 
         for message in messages:
-            _process_message(
-                message=message,
-                client=client,
-                factory=factory,
-                safety=safety,
-                models=models,
-                system_prompt=system_prompt,
-                provider_name=provider_name,
-                max_price=max_price,
-            )
+            with contextlib.suppress(Exception):
+                # A single bad turn never crashes the poll loop (spec §8.2:
+                # "failed push never breaks a turn" extends to the whole turn).
+                engine.process(message)
 
     with contextlib.suppress(Exception):
         client.update_status("offline")
     logger.info("Shutdown complete")
-
-
-def _process_message(  # noqa: PLR0913
-    *,
-    message: dict,
-    client: "HubClient",
-    factory: Any,
-    safety: SafetyFirewall,
-    models: dict,
-    system_prompt: str,
-    provider_name: str,
-    max_price: float,
-) -> None:
-    """Process a single message through the safety + LLM pipeline."""
-    msg_id = message.get("id")
-    payload = message.get("payload", {})
-    source = payload.get("source", "")
-    text = payload.get("text", "")
-
-    # Ingress safety check for Discord-originated messages
-    if source in ("discord", "discord_dm"):
-        safe, reason = safety.check_ingress(text)
-        if not safe:
-            logger.warning("Ingress blocked: %s (msg=%s)", reason, msg_id)
-            client.respond_to_message(msg_id, accepted=True, result={"text": INGRESS_CANNED.format(reason=reason)})
-            return
-
-    # Tier resolution and model selection
-    tier = TierRouter.resolve_tier(message)
-    model = models.get(tier, models.get("daily", "deepseek/deepseek-v4-flash"))
-
-    logger.info("Processing msg=%s tier=%s model=%s", msg_id, tier, model)
-    messages_list = [{"role": "system", "content": system_prompt}, {"role": "user", "content": text}]
-
-    # LLM call
-    result = _call_llm(factory, messages_list, model, tier, provider_name, max_price, msg_id)
-
-    # Uncertainty escalation: if daily tier returned an uncertain response, try strong tier
-    if tier == "daily" and _has_uncertainty(result):
-        result = _escalate_to_strong(factory, messages_list, models, msg_id, result)
-
-    # Egress safety check for Discord-originated messages
-    if source in ("discord", "discord_dm"):
-        safe, reason = safety.check_egress(result)
-        if not safe:
-            logger.warning("Egress blocked: %s (msg=%s)", reason, msg_id)
-            result = EGRESS_CANNED.format(reason=reason)
-
-    client.respond_to_message(msg_id, accepted=True, result={"text": result})
-
-
-def _call_llm(  # noqa: PLR0913
-    factory: Any,
-    messages_list: list[dict],
-    model: str,
-    tier: str,
-    provider_name: str,
-    max_price: float,
-    msg_id: str | None,
-) -> str:
-    """Execute the primary LLM call with tier-appropriate parameters."""
-    try:
-        kwargs: dict[str, Any] = {}
-        if tier == "auto" and provider_name == "openrouter":
-            kwargs["max_price"] = max_price
-        return factory.complete(messages=messages_list, model=model, **kwargs)
-    except Exception:
-        logger.exception("LLM call failed for msg=%s", msg_id)
-        return "I had trouble processing that request. Please try again."
-
-
-def _escalate_to_strong(
-    factory: Any,
-    messages_list: list[dict],
-    models: dict,
-    msg_id: str | None,
-    daily_result: str,
-) -> str:
-    """Attempt escalation from daily to strong tier on uncertain responses."""
-    strong_model = models.get("strong", "deepseek/deepseek-pro")
-    logger.warning("Daily uncertain for msg=%s — escalating to %s", msg_id, strong_model)
-    try:
-        escalated = factory.complete(messages=messages_list, model=strong_model)
-        if not _has_uncertainty(escalated):
-            return escalated
-    except Exception:
-        logger.exception("Strong escalation failed for msg=%s — using daily response", msg_id)
-    return daily_result

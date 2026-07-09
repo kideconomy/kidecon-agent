@@ -69,6 +69,7 @@ force-single-line = true
     "TRY003", # long exception messages are intentional guidance
     "EM101",  # string literal in RuntimeError
     "FBT001", # boolean positional arg (accepted) per template API
+    "PLR0913", # push_lesson takes the hub lesson contract fields by design
 ]
 "wrappers/sandbox.py" = [
     "FBT001", # boolean positional arg (auto_approve) per template API
@@ -94,6 +95,40 @@ force-single-line = true
     "BLE001", # broad except is fail-closed safety behavior
     "UP037",  # quoted annotations required for TYPE_CHECKING imports
 ]
+"wrappers/cognition.py" = [
+    "PLC0415", # lazy imports (tools/datetime/normalize) avoid circular imports and keep phase ordering clear
+    "PLR0911", # multiple return statements in _dispatch_step are intentional dispatch
+    "PLR0913", # CognitiveEngine.__init__ takes many config deps by design
+    "PLR2004", # tier/code thresholds are documented constants
+    "SIM103",  # _is_fast reads more clearly as an explicit branch
+    "TRY300",  # return inside try is intentional for swallowed-push flow
+    "E501",    # long schema/prompt strings are intentional
+    "TC001",   # NormalizationResult used at runtime in dataclass default
+]
+"wrappers/memory.py" = [
+    "PLW0603", # _taxonomy_cache global is an intentional module-level cache
+    "PLR0913", # MemoryStore methods with many params are config-driven
+    "E501",    # long regex/description strings
+]
+"wrappers/session.py" = [
+    "FBT001",  # boolean positional arg (auto_approve-style) per template API
+    "FBT002",  # boolean default positional arg
+]
+"wrappers/normalize.py" = [
+    "TC001",   # NormalizationResult re-exported for callers
+]
+"wrappers/scrub.py" = [
+    "S105",    # REDACT_TOKEN is a redaction marker, not a password
+    "RET504",  # chained .sub calls read better with intermediate vars
+]
+"shared/normalizer/normalizer.py" = [
+    "PLW0603", # _taxonomy_cache global is an intentional module-level cache
+    "PLR0913", # _match_axis params mirror the hub canonical signature
+    "FBT001",  # boolean positional arg mirrors hub canonical
+    "FBT002",  # boolean default positional arg mirrors hub canonical
+    "PLR2004", # levenshtein threshold 2 mirrors hub canonical
+    "E501",    # long docstring/regex lines
+]
 "tests/*.py" = [
     "BLE001", # broad except in test helpers
     "SLF001", # testing private attributes is expected
@@ -105,3 +140,4 @@ force-single-line = true
 [tool.pytest.ini_options]
 minversion = "8.0"
 python_files = ["test_*.py"]
+asyncio_mode = "auto"

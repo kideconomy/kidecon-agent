@@ -1,0 +1,65 @@
+{
+  "_canonical_source": "kidecon-hub/system/skill_taxonomy.json — DO NOT EDIT, run make sync-lexicon",
+  "version": "1.0",
+  "description": "Skill domain taxonomy for normalization and deduplication. KidEconomy extensions are merged at startup. Vendored read-only copy from kidecon-hub.",
+  "parent_categories": {
+    "SCHEDULING": "Calendar, appointment, and time management skills",
+    "MONITORING": "Error tracking, crash reporting, system health",
+    "ANALYTICS": "Business metrics, campaign data, reporting",
+    "COMPLIANCE": "Content safety, legal checks, policy enforcement",
+    "DOCUMENTATION": "Knowledge base search, doc retrieval, reference",
+    "SUPPORT": "Ticket creation, help desk, issue tracking",
+    "COMMUNICATION": "Messaging, notifications, alerts, Discord"
+  },
+  "task_domains": [
+    {
+      "domain_id": "SCHEDULING",
+      "display_name": "Calendar & Scheduling",
+      "description": "Manage appointments, check availability, propose reschedules",
+      "matching_keywords": ["schedule", "calendar", "appointment", "reminder", "meeting", "event", "time management", "availability", "booking", "reservation", "plan", "arrange", "set up meeting"]
+    },
+    {
+      "domain_id": "MONITORING",
+      "display_name": "Error & System Monitoring",
+      "description": "Check for errors, crashes, incidents, system health",
+      "matching_keywords": ["error", "crash", "monitor", "alert", "bug", "issue", "log", "incident", "tracking", "health", "status"]
+    },
+    {
+      "domain_id": "ANALYTICS",
+      "display_name": "Business Analytics & Reporting",
+      "description": "Campaign analytics, business metrics, performance reports",
+      "matching_keywords": ["analytics", "campaign", "metrics", "report", "dashboard", "impressions", "clicks", "conversion", "kpi", "performance", "data", "stats"]
+    },
+    {
+      "domain_id": "COMPLIANCE",
+      "display_name": "Compliance & Content Safety",
+      "description": "Legal compliance checks, content moderation, policy enforcement",
+      "matching_keywords": ["compliance", "legal", "safety", "moderation", "policy", "content check", "filter", "review", "audit", "regulation"]
+    },
+    {
+      "domain_id": "DOCUMENTATION",
+      "display_name": "Documentation & Knowledge",
+      "description": "Search documentation, retrieve references, knowledge base queries",
+      "matching_keywords": ["documentation", "docs", "search", "knowledge", "reference", "wiki", "manual", "guide", "faq", "help"]
+    },
+    {
+      "domain_id": "SUPPORT",
+      "display_name": "Support & Help Desk",
+      "description": "Submit support tickets, track issues, help desk operations",
+      "matching_keywords": ["support", "ticket", "help desk", "issue tracking", "request", "assistance", "problem", "fix"]
+    },
+    {
+      "domain_id": "COMMUNICATION",
+      "display_name": "Communication & Notifications",
+      "description": "Send messages, notifications, alerts to users via Discord or other channels",
+      "matching_keywords": ["notify", "alert", "tell", "remind", "inform", "message", "ping", "dm", "discord", "notification", "alerting", "communicate"]
+    }
+  ],
+  "action_types": [
+    {"action_id": "READ", "display_name": "Read / Fetch", "matching_keywords": ["get", "fetch", "read", "check", "view", "show", "display", "lookup", "query", "find", "list"]},
+    {"action_id": "WRITE", "display_name": "Write / Create", "matching_keywords": ["create", "write", "submit", "post", "add", "insert", "save", "store", "record"]},
+    {"action_id": "UPDATE", "display_name": "Update / Modify", "matching_keywords": ["update", "modify", "change", "edit", "set", "adjust", "reschedule", "propose"]},
+    {"action_id": "NOTIFY", "display_name": "Notify / Alert", "matching_keywords": ["notify", "alert", "remind", "tell", "inform", "message", "ping", "announce"]},
+    {"action_id": "ANALYZE", "display_name": "Analyze / Process", "matching_keywords": ["analyze", "process", "compute", "calculate", "evaluate", "assess", "review", "check"]}
+  ]
+}

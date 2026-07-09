@@ -264,3 +264,59 @@ class HubClient:
         )
         response.raise_for_status()
         return response.json().get("skills", [])
+
+    def push_lesson(
+        self,
+        kind: str,
+        title: str,
+        summary: dict,
+        tags: list[str] | None = None,
+        domain_id: str | None = None,
+        action_id: str | None = None,
+    ) -> dict:
+        """Push an agent-authored lesson to the hub knowledge store.
+
+        POST /api/lessons with JWT auth. Expects {lesson_id, status} back.
+        The caller must PII-scrub the payload first (edge deterministic regex,
+        section 8.1) and wrap this call in try/except so a failed push never
+        breaks a user-facing turn.
+        """
+        payload: dict = {
+            "kind": kind,
+            "title": title,
+            "summary": summary,
+            "tags": tags or [],
+        }
+        if domain_id:
+            payload["domain_id"] = domain_id
+        if action_id:
+            payload["action_id"] = action_id
+        response = httpx.post(
+            f"{self.hub_url}/api/lessons",
+            json=payload,
+            headers=self._auth_headers(),
+            timeout=15,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def pull_my_lessons(
+        self,
+        status: str | None = None,
+        kind: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Fetch lessons originated by this agent."""
+        params: dict = {"limit": limit}
+        if status:
+            params["status"] = status
+        if kind:
+            params["kind"] = kind
+        response = httpx.get(
+            f"{self.hub_url}/api/lessons/mine",
+            params=params,
+            headers=self._auth_headers(),
+            timeout=15,
+        )
+        response.raise_for_status()
+        return response.json().get("lessons", [])

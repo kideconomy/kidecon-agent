@@ -106,6 +106,7 @@ class TestPollBehavior:
 
 class TestTierRouting:
     def test_code_prefix_routes_coding(self, mock_client, config, mock_factory):
+        mock_client.get_tier.return_value = 2
         msg = _make_message("/code Write a python function")
         _run_one_cycle(mock_client, config, mock_factory, [msg])
         call_args = mock_factory.complete.call_args
@@ -113,11 +114,20 @@ class TestTierRouting:
         assert model == "qwen/qwen-3.7-max"
 
     def test_think_prefix_routes_strong(self, mock_client, config, mock_factory):
+        mock_client.get_tier.return_value = 2
         msg = _make_message("/think Explain quantum physics")
         _run_one_cycle(mock_client, config, mock_factory, [msg])
         call_args = mock_factory.complete.call_args
         model = call_args.kwargs.get("model", call_args[1].get("model"))
         assert model == "deepseek/deepseek-pro"
+
+    def test_code_denied_for_tier1_downgrades(self, mock_client, config, mock_factory):
+        mock_client.get_tier.return_value = 1
+        msg = _make_message("/code Write a python function")
+        _run_one_cycle(mock_client, config, mock_factory, [msg])
+        mock_factory.complete.assert_not_called()
+        respond = mock_client.respond_to_message.call_args
+        assert "Bot Master" in respond[1]["result"]["text"]
 
 
 class TestUncertaintyEscalation:
