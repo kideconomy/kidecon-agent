@@ -1,0 +1,31 @@
+name: clickup-ticket
+version: 0.1.0
+category: support
+description: >-
+  Creates internal ClickUp tickets for bugs and feature requests on behalf of
+  staff users. The agent posts directly to ClickUp using a locally-stored API
+  key (keyring), then notifies the hub's #tech Discord channel via
+  tickets.notify. Non-staff users are routed to support.ticket instead.
+entrypoint: handler.py
+permissions:
+  tools:
+    - hub_call
+  network: true
+config:
+  clickup_team_id:
+    default: ""
+    description: ClickUp team ID for URL construction (optional — auto-fetched if empty).
+  default_list_id:
+    default: ""
+    description: Fallback ClickUp list ID when category mapping finds no match.
+  list_map:
+    default: {}
+    description: >-
+      JSON mapping of ticket category to ClickUp list ID, e.g.
+      {"bug": "12345", "feature": "67890"}.
+  default_assignees:
+    default: []
+    description: List of ClickUp user IDs (integers) to assign every ticket to.
+  custom_field_map:
+    default: {}
+    description: JSON mapping of field names to ClickUp custom field UUIDs.

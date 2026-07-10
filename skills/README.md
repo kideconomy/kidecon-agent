@@ -8,11 +8,19 @@ A KidEconomy skill is a self-contained unit of capability that an agent can inst
 
 ```
 skills/
-  my-skill/
+  my_skill/
     skill.yaml        # metadata + manifest (required)
     README.md         # human-readable description (required)
     handler.py        # entry point invoked by the sandbox (required)
     requirements.txt  # extra pip deps, pinned (optional)
+```
+
+**Directory names must use underscores** (`my_skill`, not `my-skill`). The
+skill name in `skill.yaml` may use kebab-case (`my-skill`), but the Python
+package directory must be a valid identifier so imports work cleanly:
+
+```python
+from skills.my_skill.handler import run
 ```
 
 ### `skill.yaml`
@@ -58,7 +66,7 @@ def run(args: list[str], config: dict) -> dict:
 
 ## Contributing
 
-1. Fork the repo and create `skills/<your-skill>/`.
+1. Fork the repo and create `skills/<your_skill>/` (underscores, not hyphens).
 2. Fill in `skill.yaml`, `README.md`, `handler.py`.
 3. Test locally: `python -c "import importlib.util,sys; spec=importlib.util.spec_from_file_location('h','skills/<your-skill>/handler.py'); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print(m.run([], {}))"`.
 4. Publish via `kidecon skills publish` (hub submission endpoint TBD).

@@ -135,6 +135,57 @@ force-single-line = true
     "PLR2004",# magic values in assertions are test data
     "ARG002", # unused fixture args are injected by pytest
     "E501",   # test assertion lines can be long
+    "S105",   # test "password" strings are not real secrets
+    "SIM117", # nested with statements are more readable in tests
+]
+
+# Skills live in hyphenated directories (kebab-case skill names) and use
+# lazy imports for sandbox compatibility. These ignores match the agent's
+# conventions for wrapper-level code.
+"skills/*/clickup_client.py" = [
+    "TRY003", # long exception messages are intentional guidance for users
+    "EM101",  # string literal in exception is acceptable
+    "EM102",  # f-string literal in exception is acceptable
+    "PLR2004",# HTTP status codes 200/201 are self-documenting
+    "E501",   # long exception messages are intentional
+    "PLR0913",# create_task takes many params by design
+]
+"skills/*/handler.py" = [
+    "TRY003",
+    "EM102",
+    "PLC0415",
+    "BLE001",
+    "C901",
+    "PLR0912",
+    "PLR0915",
+    "E501",
+]
+
+# Standalone scripts (dev utilities, not loaded as modules) are excluded from
+# the strict module conventions.
+"skills/*/e2e_test.py" = [
+    "PLC0415",
+    "PLR0915",
+    "PLW0603",
+    "PLW0602",
+    "PLR2004",
+    "C901",
+    "E501",
+    "F401",
+]
+"skills/*/explore.py" = [
+    "F401",
+    "C901",
+    "PLR0912",
+    "PLR0915",
+    "PLC0415",
+    "PLR2004",
+    "RET508",
+    "E501",
+    "W292",
+]
+"skills/*/runner.py" = [
+    "PLC0415",
 ]
 
 [tool.pytest.ini_options]
