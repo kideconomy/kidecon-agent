@@ -1,4 +1,5 @@
-.PHONY: help install test lint clean
+.PHONY: help install test lint format clean publish \
+        distclean reinstall version doctor check
 
 VENV   = env
 PYTHON = $(VENV)/bin/python
@@ -48,6 +49,32 @@ clean:  ## Remove caches and build artifacts
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name '*.pyc' -delete
 	rm -rf *.egg-info dist build
+
+distclean: clean  ## Remove caches, build artifacts, and venv
+	rm -rf $(VENV)
+
+# ------------------------------------------------------------------
+# Utilities
+# ------------------------------------------------------------------
+
+reinstall: distclean install  ## Full reset: remove venv, recreate, install
+
+version:  ## Show current package version
+	@$(PYTHON) -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+
+doctor: install  ## Run kidecon doctor to verify installation
+	$(PYTHON) -m cli.kidecon doctor
+
+check: lint test  ## Run linters then tests (pre-commit gate)
+
+# ------------------------------------------------------------------
+# Publish
+# ------------------------------------------------------------------
+
+publish: clean  ## Build + upload to PyPI (bump version in pyproject.toml first)
+	$(PIP) install build twine
+	$(PYTHON) -m build
+	$(PYTHON) -m twine upload dist/*
 
 # ------------------------------------------------------------------
 # Sync shared LLM clients from kidecon-hub (canonical source)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kidecon-agent"
-version = "0.1.0"
+version = "0.2.1"
 description = "Kidecon Agent CLI — client sidecar for the Kidecon Agent Network"
 requires-python = ">=3.11"
 license = {text = "MIT"}
