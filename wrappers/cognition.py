@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from wrappers.memory import MemoryStore
     from wrappers.safety_firewall import SafetyFirewall
     from wrappers.session import SessionStore
+    from wrappers.skill_loader import SkillLoader
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,13 @@ CODING_DENIED_MESSAGE = (
     "`/code` requires Bot Master access (your tier: {tier}). "
     "Learn more or request an upgrade. `/think` (deep reasoning) is available to all tiers."
 )
+
+A2A_TASK_REQUEST = "task_request"
+A2A_TASK_RESULT = "task_result"
+A2A_TASK_REFUSE = "task_refuse"
+A2A_TASK_FAILURE = "task_failure"
+
+A2A_RESPONSE_TYPES = frozenset({A2A_TASK_RESULT, A2A_TASK_REFUSE, A2A_TASK_FAILURE})
 
 CLASSIFY_SCHEMA: dict = {
     "name": "orientation",
@@ -90,6 +98,7 @@ PLAN_SCHEMA: dict = {
                                 "message_user",
                                 "recall_more",
                                 "user_script",
+                                "delegate",
                             ],
                         },
                         "params": {"type": "object"},
@@ -223,6 +232,7 @@ class Context:
     session_history: list[dict] = field(default_factory=list)
     core_blocks: str = ""
     user_id: str = "default"
+    skill_instructions: str | None = None
 
 
 @dataclass
@@ -265,6 +275,9 @@ class CognitiveEngine:
         cognition_config: dict | None = None,
         normalization_config: dict | None = None,
         agent_hub_tier: int = 1,
+        skill_loader: SkillLoader | None = None,
+        agent_id: str | None = None,
+        is_orchestrator: bool = False,
     ) -> None:
         self.factory = factory
         self.safety = safety
@@ -278,6 +291,9 @@ class CognitiveEngine:
         self.cognition = {**DEFAULT_COGNITION_CONFIG, **(cognition_config or {})}
         self.normalization = {**DEFAULT_NORMALIZATION_CONFIG, **(normalization_config or {})}
         self.agent_hub_tier = agent_hub_tier
+        self.skill_loader = skill_loader
+        self.agent_id = agent_id
+        self.is_orchestrator = is_orchestrator
         self._ensure_persona()
 
     def _ensure_persona(self) -> None:
@@ -296,11 +312,14 @@ class CognitiveEngine:
     # ------------------------------------------------------------------
     def process(self, message: dict) -> None:
         msg_id = message.get("id")
+        msg_type = message.get("type", "")
         payload = message.get("payload", {})
         source = payload.get("source", "")
         text = payload.get("text", "")
+        discord_user_id = payload.get("discord_user_id")
+        self._current_discord_user_id = discord_user_id
 
-        if source in ("discord", "discord_dm"):
+        if source in ("discord", "discord_dm", "a2a"):
             safe, reason = self.safety.check_ingress(text)
             if not safe:
                 logger.warning("Ingress blocked: %s (msg=%s)", reason, msg_id)
@@ -349,6 +368,19 @@ class CognitiveEngine:
 
         self.client.respond_to_message(msg_id, accepted=True, result={"text": final_result})
 
+        if msg_type == A2A_TASK_REQUEST:
+            from_agent_id = message.get("from_agent_id")
+            if from_agent_id:
+                try:
+                    self.client.send_message(
+                        to_agent_id=str(from_agent_id),
+                        msg_type=A2A_TASK_RESULT,
+                        payload={"text": final_result, "source": "a2a"},
+                        reply_to=msg_id,
+                    )
+                except Exception:
+                    logger.exception("Failed to send A2A task_result to %s", from_agent_id)
+
     def _should_reflect(self, tier: str) -> bool:
         # strong/coding always reflect; daily only when reflect_on_daily is set.
         if tier in ("strong", "coding"):
@@ -383,6 +415,13 @@ class CognitiveEngine:
         core_blocks = self.memory.load_core_blocks()
         session_history = []
         user_id = "default"
+        skill_instructions = None
+        if self.skill_loader:
+            matched = self.skill_loader.find_skill(text)
+            if matched:
+                skill_instructions = self.skill_loader.get_skill_instructions(matched["id"])
+                if skill_instructions:
+                    logger.info("Matched skill '%s' for message", matched["name"])
         if source in ("discord", "discord_dm"):
             user_id = message.get("payload", {}).get("discord_user_id") or message.get(
                 "metadata",
@@ -400,6 +439,7 @@ class CognitiveEngine:
             session_history=session_history,
             core_blocks=core_blocks,
             user_id=user_id,
+            skill_instructions=skill_instructions,
         )
 
     def _normalize(self, text: str, tier: str) -> NormalizationResult:
@@ -448,6 +488,12 @@ class CognitiveEngine:
         system_tail_parts = [self.system_prompt]
         if context.core_blocks:
             system_tail_parts.append(context.core_blocks)
+        if context.skill_instructions:
+            system_tail_parts.append(context.skill_instructions)
+        if self.skill_loader:
+            index_summary = self.skill_loader.get_index_summary()
+            if index_summary:
+                system_tail_parts.append(index_summary)
         if context.recall_block:
             system_tail_parts.append("Relevant memory:\n" + context.recall_block)
         system_content = "\n\n".join(system_tail_parts)
@@ -599,7 +645,47 @@ class CognitiveEngine:
             return self.memory.recall(cues, top_k=self.cognition.get("recall_top_k", 5))
         if action == "user_script":
             return "user_script step deferred (coding-tier sandbox)"
+        if action == "delegate":
+            return self._handle_delegation(step, context)
         return f"unknown action: {action}"
+
+    def _handle_delegation(self, step: Step, context: Context) -> str:
+        from wrappers.orchestrator import (
+            delegate_task,
+            load_worker_roster,
+            select_worker,
+        )
+
+        task_text = step.params.get("task", context.text)
+        task_type = step.params.get("task_type", "general")
+
+        roster = load_worker_roster()
+        if not roster:
+            return "No workers available. All workers are offline or not configured."
+
+        worker = select_worker(roster, task_type)
+        if not worker:
+            return "No worker matched for this task type."
+
+        task_id = delegate_task(self.client, worker, task_text, task_type)
+        if not task_id:
+            return f"Failed to delegate to {worker['profile'].name}."
+
+        if not hasattr(self, "_pending_delegations"):
+            self._pending_delegations = {}
+        self._pending_delegations[task_id] = {
+            "worker_name": worker["profile"].name,
+            "msg_id": task_id,
+            "discord_user_id": getattr(self, "_current_discord_user_id", None),
+        }
+
+        logger.info(
+            "Delegated task to %s (msg_id=%s, type=%s)",
+            worker["profile"].name,
+            task_id,
+            task_type,
+        )
+        return f"Working on it — delegated to {worker['profile'].name}. I'll get back to you shortly."
 
     @staticmethod
     def _run_local_tool(params: dict) -> str:

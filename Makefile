@@ -1,7 +1,7 @@
 .PHONY: help install test lint format clean publish \
         distclean reinstall version doctor check
 
-VENV   = env
+VENV   = .venv
 PYTHON = $(VENV)/bin/python
 PIP    = $(VENV)/bin/pip
 

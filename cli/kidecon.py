@@ -1,6 +1,7 @@
 import logging
 import os
 import pathlib
+import signal
 import subprocess
 import sys
 import contextlib
@@ -18,6 +19,23 @@ from wrappers.hub_client import KEY_AGENT_ID
 from wrappers.hub_client import KEY_JWT
 from wrappers.hub_client import KEYRING_SERVICE
 from wrappers.hub_client import HubClient
+from wrappers.profile_store import (
+    Profile,
+    create_profile,
+    delete_profile,
+    get_active,
+    get_log_path,
+    list_profile_objects,
+    list_profiles,
+    load_profile,
+    nuke_all_profiles,
+    read_pid,
+    resolve_profile,
+    save_profile,
+    set_active,
+    write_pid,
+    clear_pid,
+)
 from wrappers.sandbox import APPROVED_FILE as SANDBOX_APPROVED_FILE
 from wrappers.sandbox import SCRIPTS_DIR as SANDBOX_SCRIPTS_DIR
 
@@ -170,7 +188,6 @@ def init(
     defaults = {
         "hub_url": hub,
         "kideconomy_api_url": kideconomy_api,
-        "provider": "openrouter",
         "tool_gate": {
             "allow": [
                 "file_read",
@@ -187,11 +204,11 @@ def init(
             "models": {
                 "auto": "openrouter/auto",
                 "daily": "deepseek/deepseek-v4-flash",
-                "strong": "deepseek/deepseek-pro",
-                "coding": "qwen/qwen-3.7-max",
+                "strong": "deepseek/deepseek-v4-pro",
+                "coding": "qwen/qwen3.7-max",
                 "safety": "meta-llama/llama-3-8b-instruct",
             },
-            "max_price": 0.01,
+            "max_price": 1.0,
             "default_tier": "daily",
             "system_prompt": (
                 "You are Hermes, an AI learning companion for KidEconomy users. "
@@ -224,6 +241,11 @@ def init(
             "pull_on_idle": True,
             "pull_interval_minutes": 360,
         },
+        "skills": {
+            "load_on_boot": True,
+            "refresh_interval": 360,
+            "auto_match": True,
+        },
         "update_channel": "stable",
         "hermes_version": "v1.2.0",
     }
@@ -250,36 +272,32 @@ def init(
         logger.debug("No existing registration to clear — proceeding fresh.")
 
     console.print()
-    console.print("Next: [bold]kidecon setup --name <name>[/bold]")
+    console.print("Next: [bold]kidecon agents create --name <name> --role orchestrator|worker|standalone[/bold]")
 
 
 # ------------------------------------------------------------------
-# setup
+# setup (creates a single standalone agent — the simplest path)
 # ------------------------------------------------------------------
 @app.command()
 def setup(
     agent_display_name: str = typer.Option(
-        ..., "--agent-display-name", prompt="Agent display name (e.g. johnnys-laptop)",
-        help="Display label for this agent instance — NOT your username. "
-             "Use something that identifies the machine or purpose "
-             "(e.g. johnnys-laptop, ci-runner, dev-agent).",
+        ..., "--agent-display-name", prompt="Agent display name (e.g. my-laptop)",
+        help="Display label for this agent instance.",
     ),
     ke_username: str = typer.Option(
         None, "--ke-username",
-        help="Your KidEconomy username (prompts if not provided). "
-             "This is the account that owns this agent.",
+        help="Your KidEconomy username (prompts if not provided).",
     ),
 ):
-    """Register this agent with the hub.
+    """Register a standalone agent with the hub.
+
+    This is the simplest path — creates a single standalone agent that
+    handles everything itself. For multi-agent swarms (orchestrator +
+    workers), use [bold]kidecon agents create[/bold] instead.
 
     Authenticates against KidEconomy using your username and password,
-    then registers the agent with the hub. The hub verifies your KidEconomy
-    token and links this agent to your account. Your password is never
+    then registers the agent with the hub. Your password is never
     stored — it's used once to get a DRF token and then discarded.
-
-    Examples:
-        kidecon setup --agent-display-name my-laptop
-        kidecon setup --agent-display-name my-laptop --ke-username johnny
     """
     import getpass
 
@@ -290,10 +308,7 @@ def setup(
         console.print("  Run [bold]kidecon init[/bold] first.")
         raise typer.Exit(code=1)
 
-    client = HubClient(
-        hub_url=config["hub_url"],
-        kideconomy_api_url=ke_api_url,
-    )
+    hub_url = config["hub_url"]
 
     if not ke_username:
         ke_username = typer.prompt("KidEconomy username")
@@ -302,35 +317,52 @@ def setup(
 
     console.print(f"[dim]Authenticating against KidEconomy ({ke_api_url})...[/dim]")
     try:
-        ke_token = client.fetch_ke_token(ke_username, password)
+        ke_token = HubClient(
+            hub_url=hub_url,
+            kideconomy_api_url=ke_api_url,
+        ).fetch_ke_token(ke_username, password)
     except Exception as err:
-        console.print(f"[bold red]✗[/bold red] KidEconomy authentication failed: {err}")
+        _print_error(err, "KidEconomy authentication failed")
         raise typer.Exit(code=1) from err
     finally:
         del password
 
-    console.print(f"[dim]Registering agent with hub ({config['hub_url']})...[/dim]")
+    console.print(f"[dim]Registering agent with hub ({hub_url})...[/dim]")
     try:
-        client.register(name=agent_display_name, ke_token=ke_token)
+        profile = create_profile(
+            name=agent_display_name,
+            role="standalone",
+            hub_url=hub_url,
+            ke_token=ke_token,
+        )
+    except FileExistsError:
+        console.print(f"[bold yellow]⚠[/bold yellow] Profile '{agent_display_name}' already exists locally.")
+        console.print("  Use [bold]kidecon agents delete[/bold] to remove it, or pick a different name.")
+        raise typer.Exit(code=1)
     except Exception as err:
-        console.print(f"[bold red]✗[/bold red] Hub registration failed: {err}")
+        _print_error(err, "Hub registration failed")
         raise typer.Exit(code=1) from err
 
     console.print()
     console.print("[bold green]✓[/bold green] Agent registered and linked to KidEconomy account.")
-    console.print(f"  [bold cyan]Agent ID:[/bold cyan]        {client.agent_id}")
+    console.print(f"  [bold cyan]Profile:[/bold cyan]         {profile.name}")
+    console.print(f"  [bold cyan]Agent ID:[/bold cyan]        {profile.agent_id}")
+    console.print(f"  [bold cyan]Role:[/bold cyan]           {profile.role}")
     console.print(f"  [bold cyan]KE user:[/bold cyan]        {ke_username}")
-    console.print(f"  [bold cyan]Hub:[/bold cyan]            {config['hub_url']}")
-    console.print(f"  [bold cyan]KidEconomy:[/bold cyan]     {ke_api_url}")
+    console.print(f"  [bold cyan]Hub:[/bold cyan]            {hub_url}")
     console.print()
-    console.print("JWT stored in keyring. Run [bold]kidecon status[/bold] to verify.")
+    console.print(f"Profile saved. Run [bold]kidecon start --name {profile.name}[/bold] to boot.")
+    console.print("[dim]Need a multi-agent swarm? Use [bold]kidecon agents create --role orchestrator|worker[/bold][/dim]")
 
 
 # ------------------------------------------------------------------
 # start
 # ------------------------------------------------------------------
 @app.command()
-def start():
+def start(
+    name: str = typer.Option(None, "--name", help="Agent profile name to start"),
+    background: bool = typer.Option(False, "--background", "-b", help="Run as background daemon"),
+):
     """Launch Hermes — enter the long-poll loop and process incoming messages."""
     import httpx
 
@@ -344,35 +376,91 @@ def start():
         console.print(f"[bold red]✗[/bold red] Hub unreachable at {hub_url}")
         raise typer.Exit(code=1) from err
 
-    client = require_auth()
+    profile = resolve_profile(name)
+    if not profile or not profile.jwt:
+        console.print("[bold red]✗[/bold red] No agent profile found. Run [bold]kidecon agents create[/bold] first.")
+        raise typer.Exit(code=1)
+
+    client = HubClient(
+        hub_url=hub_url,
+        kideconomy_api_url=config.get("kideconomy_api_url", ""),
+        profile=profile,
+    )
 
     try:
         tier = client.get_tier()
     except Exception as err:
-        console.print("[bold red]✗[/bold red] JWT invalid or expired. Re-run '[bold]kidecon setup[/bold]'.")
+        console.print("[bold red]✗[/bold red] JWT invalid or expired. Re-run '[bold]kidecon setup[/bold]' or '[bold]kidecon agents create[/bold]'.")
         raise typer.Exit(code=1) from err
 
-    console.print(f"[bold green]✓[/bold green] Hermes booting — tier {tier}, hub {hub_url}")
+    if background:
+        _start_background(profile, config)
+        return
+
+    console.print(f"[bold green]✓[/bold green] Hermes booting — tier {tier}, hub {hub_url}, agent [bold]{profile.name}[/bold] ({profile.role})")
     console.print("[dim]Long-polling for messages... (Ctrl+C to stop)[/dim]")
 
     from wrappers.runtime import run_forever
 
+    is_orch = profile.role == "orchestrator"
     try:
-        run_forever(client, config)
+        write_pid(profile, os.getpid())
+        run_forever(client, config, is_orchestrator=is_orch)
     except KeyboardInterrupt:
         console.print("\n[dim]Shutting down...[/dim]")
+    finally:
+        clear_pid(profile)
+
+
+def _start_background(profile: Profile, config: dict) -> None:
+    """Launch the agent as a background subprocess."""
+    pid = read_pid(profile)
+    if pid:
+        console.print(f"[bold yellow]⚠[/bold yellow] Agent '{profile.name}' is already running (PID {pid}).")
+        raise typer.Exit(code=1)
+
+    log_path = get_log_path(profile.name)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_file = open(str(log_path), "a")
+
+    agent_bin = pathlib.Path(__file__).resolve().parent.parent / ".venv" / "bin" / "kidecon"
+    if not agent_bin.exists():
+        agent_bin = pathlib.Path(sys.executable).parent / "kidecon"
+
+    cmd = [sys.executable, "-u", "-m", "cli.kidecon", "--no-splash", "start", "--name", profile.name]
+    proc = subprocess.Popen(
+        cmd,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        cwd=str(pathlib.Path(__file__).resolve().parent.parent),
+    )
+    write_pid(profile, proc.pid)
+    console.print(f"[bold green]✓[/bold green] Agent '{profile.name}' started in background (PID {proc.pid}).")
+    console.print(f"[dim]Logs: {log_path}[/dim]")
 
 
 # ------------------------------------------------------------------
 # stop
 # ------------------------------------------------------------------
 @app.command()
-def stop():
+def stop(
+    name: str = typer.Option(None, "--name", help="Agent profile name to stop"),
+):
     """Graceful shutdown — marks agent offline on hub and cleans up."""
-    client = require_auth()
+    profile = resolve_profile(name)
+    if not profile:
+        console.print("[bold red]✗[/bold red] No agent profile found.")
+        raise typer.Exit(code=1)
+
+    client = HubClient(
+        hub_url=load_config()["hub_url"],
+        kideconomy_api_url=load_config().get("kideconomy_api_url", ""),
+        profile=profile,
+    )
     try:
         client.update_status("offline")
-        console.print("[bold green]✓[/bold green] Agent marked offline on hub.")
+        console.print(f"[bold green]✓[/bold green] Agent '{profile.name}' marked offline on hub.")
     except Exception:
         console.print("[bold yellow]⚠[/bold yellow] Could not reach hub to update status (already offline?).")
 
@@ -381,24 +469,387 @@ def stop():
 # status
 # ------------------------------------------------------------------
 @app.command()
-def status():
+def status(
+    name: str = typer.Option(None, "--name", help="Agent profile name to check"),
+):
     """Check if agent is running and connected to hub."""
-    client = require_auth()
+    profile = resolve_profile(name)
+    if not profile:
+        console.print("[bold red]✗[/bold red] No agent profile found.")
+        raise typer.Exit(code=1)
+
+    config = load_config()
+    client = HubClient(
+        hub_url=config["hub_url"],
+        kideconomy_api_url=config.get("kideconomy_api_url", ""),
+        profile=profile,
+    )
+
     try:
         tier = client.get_tier()
+        tier_str = str(tier)
+    except Exception:
+        tier_str = "[red]unknown (JWT expired?)[/red]"
+
+    pid = read_pid(profile)
+    running = "[green]running[/green]" if pid else "[dim]stopped[/dim]"
+
+    console.print(f"[bold cyan]Profile:[/bold cyan]      {profile.name}")
+    console.print(f"[bold cyan]Agent ID:[/bold cyan]     {profile.agent_id}")
+    console.print(f"[bold cyan]Role:[/bold cyan]         {profile.role}")
+    console.print(f"[bold cyan]KE user:[/bold cyan]      {profile.ke_username or '(none)'}")
+    console.print(f"[bold cyan]Registered:[/bold cyan]   yes")
+    console.print(f"[bold cyan]Tier:[/bold cyan]        {tier_str}")
+    console.print(f"[bold cyan]Hub:[/bold cyan]         {config['hub_url']}")
+    console.print(f"[bold cyan]Status:[/bold cyan]      {running}", highlight=False)
+    if pid:
+        console.print(f"[bold cyan]PID:[/bold cyan]         {pid}")
+
+
+# ------------------------------------------------------------------
+# agents
+# ------------------------------------------------------------------
+_agents_app = typer.Typer(help="Manage local agent profiles.")
+app.add_typer(_agents_app, name="agents", help="Manage local agent profiles.")
+
+
+@_agents_app.callback()
+def agents_main(
+    no_color: bool = typer.Option(False, "--no-color", help="Disable color and rich formatting."),
+):
+    """Manage local agent profiles."""
+    _apply_no_color(no_color)
+
+
+@_agents_app.command("list")
+def agents_list():
+    """List all local agent profiles."""
+    names = list_profiles()
+    if not names:
+        console.print("[dim]No agent profiles found. Create one with [bold]kidecon agents create[/bold] or [bold]kidecon setup[/bold].[/dim]")
+        return
+
+    active = get_active()
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Name")
+    table.add_column("Role")
+    table.add_column("Agent ID")
+    table.add_column("Status")
+    table.add_column("Active")
+
+    for name in names:
+        profile = load_profile(name)
+        if not profile:
+            continue
+        pid = read_pid(profile)
+        status = "[green]running[/green]" if pid else "[dim]stopped[/dim]"
+        is_active = "[green]●[/green]" if name == active else ""
+        table.add_row(
+            name,
+            profile.role,
+            profile.agent_id[:8] + "…",
+            status,
+            is_active,
+        )
+    console.print(table)
+
+
+@_agents_app.command("create")
+def agents_create(
+    name: str = typer.Option(..., "--name", prompt="Agent profile name", help="Unique name for this agent profile"),
+    role: str = typer.Option("standalone", "--role", help="Agent role: orchestrator, worker, or standalone"),
+    ke_username: str = typer.Option(None, "--ke-username", help="KidEconomy username"),
+):
+    """Create and register a new agent profile."""
+    import getpass
+
+    if role not in ("orchestrator", "worker", "standalone"):
+        console.print(f"[bold red]✗[/bold red] Invalid role: '{role}'. Use: orchestrator, worker, standalone.")
+        raise typer.Exit(code=1)
+
+    config = load_config()
+    hub_url = config["hub_url"]
+    ke_api_url = config.get("kideconomy_api_url", "")
+
+    if not ke_api_url:
+        console.print("[bold red]✗[/bold red] KidEconomy API URL not configured. Run [bold]kidecon init[/bold] first.")
+        raise typer.Exit(code=1)
+
+    if not ke_username:
+        ke_username = typer.prompt("KidEconomy username")
+
+    password = getpass.getpass("KidEconomy password: ")
+
+    try:
+        ke_token = HubClient(
+            hub_url=hub_url,
+            kideconomy_api_url=ke_api_url,
+        ).fetch_ke_token(ke_username, password)
     except Exception as err:
-        console.print(f"[bold red]✗[/bold red] JWT invalid or expired: {err}")
+        _print_error(err, "KidEconomy authentication failed")
+        raise typer.Exit(code=1) from err
+    finally:
+        del password
+
+    try:
+        profile = create_profile(
+            name=name,
+            role=role,
+            hub_url=hub_url,
+            ke_token=ke_token,
+        )
+    except FileExistsError:
+        console.print(f"[bold red]✗[/bold red] Profile '{name}' already exists.")
+        raise typer.Exit(code=1)
+    except Exception as err:
+        _print_error(err, "Registration failed")
         raise typer.Exit(code=1) from err
 
-    agent_id = keyring.get_password(KEYRING_SERVICE, KEY_AGENT_ID)
-    ke_username = keyring.get_password(KEYRING_SERVICE, "kideconomy_username")
-    config = load_config()
+    console.print(f"[bold green]✓[/bold green] Agent '{name}' created and registered.")
+    console.print(f"  Role: {profile.role} | Agent ID: {profile.agent_id}")
 
-    console.print(f"[bold cyan]Agent ID:[/bold cyan]     {agent_id or '(not set)'}")
-    console.print(f"[bold cyan]KE user:[/bold cyan]      {ke_username or '(none)'}")
-    console.print("[bold cyan]Registered:[/bold cyan]   yes")
-    console.print(f"[bold cyan]Tier:[/bold cyan]        {tier}")
-    console.print(f"[bold cyan]Hub:[/bold cyan]         {config['hub_url']}")
+    if role == "orchestrator":
+        _demote_standalones_to_workers(orchestrator_name=name)
+
+    console.print(f"  Next: [bold]kidecon start --name {name}[/bold]")
+
+
+def _print_error(err: Exception, context: str = "Error") -> None:
+    """Print a clean error message — strips verbose httpx URLs from display."""
+    msg = str(err)
+    if "For more information check:" in msg:
+        msg = msg.split("For more information check:")[0].strip()
+    console.print(f"[bold red]✗[/bold red] {context}: {msg}")
+
+
+# ------------------------------------------------------------------
+# panic
+# ------------------------------------------------------------------
+@app.command()
+def panic(
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
+):
+    """[bold red]DANGER:[/bold red] Completely wipe all agent data.
+
+    Deletes:
+    - All agent profiles (~/.config/kidecon/agents/)
+    - The main config file (~/.config/kidecon/kidecon.yaml)
+    - All keyring entries (JWT, agent_id, KE username, API keys)
+    """
+    if not force:
+        console.print()
+        console.print("[bold red on white] ⚠ DANGER — THIS WILL DELETE EVERYTHING ⚠ [/bold red on white]")
+        console.print()
+        console.print("  • All agent profiles (agent IDs, JWT tokens)")
+        console.print("  • Hub connection config (kidecon.yaml)")
+        console.print("  • All stored API keys and secrets in keyring")
+        console.print("  • [bold]All agents deactivated on the hub[/bold]")
+        console.print()
+        confirm = typer.confirm("Are you absolutely sure?", default=False)
+        if not confirm:
+            console.print("[dim]Panic cancelled.[/dim]")
+            raise typer.Exit()
+        console.print()
+
+    config = load_config()
+    hub_url = config.get("hub_url", "")
+
+    deactivated = 0
+    for profile in list_profile_objects():
+        if profile.jwt and hub_url:
+            try:
+                import httpx
+                resp = httpx.delete(
+                    f"{hub_url.rstrip('/')}/api/agent/{profile.agent_id}",
+                    headers={"Authorization": f"Bearer {profile.jwt}"},
+                    timeout=10,
+                )
+                if resp.status_code in (200, 404):
+                    deactivated += 1
+            except Exception:
+                pass
+
+    if deactivated:
+        console.print(f"  [red]Deactivated[/red] {deactivated} agent(s) on the hub")
+
+    deleted_profiles = nuke_all_profiles()
+    if deleted_profiles:
+        console.print(f"  [red]Deleted[/red] {len(deleted_profiles)} agent profile(s): {', '.join(deleted_profiles)}")
+
+    config_path = pathlib.Path.home() / ".config" / "kidecon" / "kidecon.yaml"
+    if config_path.exists():
+        config_path.unlink()
+        console.print(f"  [red]Deleted[/red] {config_path}")
+
+    keys_dir = pathlib.Path.home() / ".config" / "kidecon" / "keys"
+    if keys_dir.exists():
+        import shutil
+        shutil.rmtree(keys_dir)
+        console.print(f"  [red]Deleted[/red] {keys_dir}")
+
+    try:
+        import keyring
+        cleared = 0
+        for key in ["hub_jwt", "agent_id", "kideconomy_username"]:
+            try:
+                existing = keyring.get_password("kidecon-agent", key)
+                if existing:
+                    keyring.delete_password("kidecon-agent", key)
+                    cleared += 1
+            except Exception:
+                pass
+        if cleared:
+            console.print(f"  [red]Cleared[/red] {cleared} keyring entry/entries")
+    except Exception:
+        pass
+
+    console.print()
+    console.print("[bold green]✓[/bold green] Panic complete. Machine is clean.")
+    console.print("  Run [bold]kidecon init[/bold] to start fresh.")
+
+
+def _demote_standalones_to_workers(orchestrator_name: str) -> None:
+    """Auto-demote any standalone profiles to worker when creating an orchestrator."""
+    from wrappers.profile_store import set_profile_role
+
+    for existing in list_profile_objects():
+        if existing.role == "standalone":
+            set_profile_role(existing.name, "worker")
+            console.print(
+                f"[bold yellow]⚠[/bold yellow] Standalone '[bold]{existing.name}[/bold]' "
+                f"demoted to [bold]worker[/bold] — orchestrator '[bold]{orchestrator_name}[/bold]' "
+                f"now owns Discord listening."
+            )
+
+
+@_agents_app.command("delete")
+def agents_delete(
+    name: str = typer.Option(..., "--name", prompt="Agent profile name to delete", help="Name of the profile to delete"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
+):
+    """Delete a local agent profile."""
+    profile = load_profile(name)
+    if not profile:
+        console.print(f"[bold red]✗[/bold red] Profile '{name}' not found.")
+        raise typer.Exit(code=1)
+
+    if not force:
+        if profile.jwt:
+            confirm = typer.confirm(
+                f"Delete profile '{name}'? This does NOT de-register the agent from the hub.",
+                default=False,
+            )
+        else:
+            confirm = typer.confirm(f"Delete profile '{name}'?", default=False)
+        if not confirm:
+            console.print("[dim]Cancelled.[/dim]")
+            raise typer.Exit()
+
+    pid = read_pid(profile)
+    if pid:
+        console.print(f"[bold yellow]⚠[/bold yellow] Agent '{name}' is running (PID {pid}). Stop it first with [bold]kidecon agents stop --name {name}[/bold].")
+        raise typer.Exit(code=1)
+
+    delete_profile(name)
+    console.print(f"[bold green]✓[/bold green] Profile '{name}' deleted.")
+
+
+@_agents_app.command("stop")
+def agents_stop(
+    name: str = typer.Option(..., "--name", prompt="Agent profile name to stop", help="Name of the agent to stop"),
+):
+    """Stop a running background agent via SIGTERM."""
+    import signal as _signal
+
+    profile = load_profile(name)
+    if not profile:
+        console.print(f"[bold red]✗[/bold red] Profile '{name}' not found.")
+        raise typer.Exit(code=1)
+
+    pid = read_pid(profile)
+    if not pid:
+        console.print(f"[bold yellow]⚠[/bold yellow] Agent '{name}' is not running.")
+        raise typer.Exit(code=0)
+
+    os.kill(pid, _signal.SIGTERM)
+    console.print(f"[bold green]✓[/bold green] SIGTERM sent to '{name}' (PID {pid}).")
+
+    import time
+    for _ in range(10):
+        time.sleep(1)
+        if read_pid(profile) is None:
+            console.print(f"[bold green]✓[/bold green] Agent '{name}' shut down gracefully.")
+            clear_pid(profile)
+            return
+
+    console.print("[bold yellow]⚠[/bold yellow] Agent did not shut down in 10s. Sending SIGKILL.")
+    try:
+        os.kill(pid, _signal.SIGKILL)
+    except OSError:
+        pass
+    clear_pid(profile)
+    console.print(f"[bold green]✓[/bold green] Agent '{name}' killed.")
+
+
+@_agents_app.command("logs")
+def agents_logs(
+    name: str = typer.Option(..., "--name", prompt="Agent profile name", help="Name of the agent"),
+    lines: int = typer.Option(50, "--lines", "-n", help="Number of lines to show"),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output"),
+):
+    """Show or tail the log output for an agent."""
+    log_path = get_log_path(name)
+    if not log_path.exists():
+        console.print(f"[dim]No log file yet for '{name}'.[/dim]")
+        return
+
+    if follow:
+        import subprocess as _sp
+        _sp.run(["tail", "-f", "-n", str(lines), str(log_path)])
+    else:
+        content = log_path.read_text()
+        if not content.strip():
+            console.print("[dim]Log file is empty.[/dim]")
+            return
+        tail_lines = content.strip().split("\n")[-lines:]
+        for line in tail_lines:
+            console.print(line)
+
+
+@_agents_app.command("status")
+def agents_status(
+    name: str = typer.Option(None, "--name", help="Show status for a specific agent"),
+):
+    """Show running/stopped state for agents."""
+    if name:
+        profiles = [load_profile(name)]
+        if not profiles[0]:
+            console.print(f"[bold red]✗[/bold red] Profile '{name}' not found.")
+            raise typer.Exit(code=1)
+    else:
+        profiles = list_profile_objects()
+
+    if not profiles:
+        console.print("[dim]No agent profiles found.[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Name")
+    table.add_column("Role")
+    table.add_column("PID")
+    table.add_column("Status")
+
+    for p in profiles:
+        pid = read_pid(p)
+        if pid:
+            status = "[green]running[/green]"
+            pid_str = str(pid)
+        else:
+            status = "[dim]stopped[/dim]"
+            pid_str = "—"
+        table.add_row(p.name, p.role, pid_str, status)
+
+    console.print(table)
 
 
 # ------------------------------------------------------------------
@@ -920,6 +1371,56 @@ def doctor():
         _add("Keys", key_name, "pass" if v else "warn",
              "user-added" if v else "indexed but missing")
 
+    # LLM model validation
+    llm_config = config.get("llm", {}) if "config" in dir() else {}
+    models = llm_config.get("models", {})
+    max_price = llm_config.get("max_price", 0.01)
+    or_key = keyring.get_password(KEYRING_SERVICE, "api_key_openrouter")
+
+    if not models:
+        _add("LLM", "Models config", "fail", "no models section in kidecon.yaml",
+             "Re-run `kidecon init` to regenerate config")
+    elif not or_key:
+        _add("LLM", "Models config", "warn", "OpenRouter key missing — skipping validation",
+             "Run: kidecon key add --name openrouter --value <key>")
+    else:
+        try:
+            or_resp = httpx.get(
+                "https://openrouter.ai/api/v1/models",
+                headers={"Authorization": f"Bearer {or_key}"},
+                timeout=15,
+            )
+            or_resp.raise_for_status()
+            valid_ids = {m["id"] for m in or_resp.json().get("data", [])}
+            valid_pricing = {
+                m["id"]: float(m.get("pricing", {}).get("prompt", 0)) * 1_000_000
+                for m in or_resp.json().get("data", [])
+            }
+        except Exception as e:
+            _add("LLM", "OpenRouter API", "fail", str(e),
+                 "Check OpenRouter API key and network")
+            valid_ids = set()
+            valid_pricing = {}
+
+        if valid_ids:
+            for tier_name, model_id in models.items():
+                if model_id not in valid_ids:
+                    _add("LLM", f"Model: {tier_name}", "fail",
+                         f"'{model_id}' is not a valid OpenRouter model ID",
+                         f"Check https://openrouter.ai/models for correct ID")
+                else:
+                    price = valid_pricing.get(model_id, 0)
+                    if price <= 0:
+                        _add("LLM", f"Model: {tier_name}", "pass",
+                             f"'{model_id}' (variable pricing)")
+                    elif price > max_price:
+                        _add("LLM", f"Model: {tier_name}", "warn",
+                             f"'{model_id}' costs ${price:.2f}/M tokens (budget: ${max_price:.2f})",
+                             "Reduce max_price or choose a cheaper model")
+                    else:
+                        _add("LLM", f"Model: {tier_name}", "pass",
+                             f"'{model_id}' (${price:.2f}/M)")
+
     messages_log = Path.home() / "kidecon" / "messages.log"
     if messages_log.exists():
         mtime = datetime.fromtimestamp(messages_log.stat().st_mtime, tz=UTC)
@@ -947,7 +1448,7 @@ def doctor():
          "" if ws_exists else "Run `mkdir -p ~/kidecon/workspace` to create")
 
     counts = {"pass": 0, "fail": 0, "warn": 0}
-    order = ["Environment", "Hub", "Keys", "Sandbox"]
+    order = ["Environment", "Hub", "Keys", "LLM", "Sandbox"]
     for group in order:
         rows = [r for r in results if r[0] == group]
         if not rows:
@@ -1003,11 +1504,11 @@ def admin_main(
 
 @_admin_app.command("skills")
 def admin_skills(
-    action: str = typer.Argument(..., help="pending | approve | reject"),
+    action: str = typer.Argument(..., help="pending | approve | reject | embed"),
     skill_id: str = typer.Option(None, "--id", help="Skill ID (required for approve/reject)"),
     reason: str = typer.Option(None, "--reason", help="Rejection reason (required for reject)"),
 ):
-    """Manage skills: pending (list), approve, reject."""
+    """Manage skills: pending (list), approve, reject, embed (generate embeddings for vector search)."""
     client = require_auth()
 
     if action == "pending":
@@ -1051,14 +1552,37 @@ def admin_skills(
             raise typer.Exit(code=1) from err
         console.print(f"[bold yellow]⚠[/bold yellow] Skill {skill_id} rejected: {result['reason']}")
 
+    elif action == "embed":
+        console.print("[dim]Generating embeddings for all live skills...[/dim]")
+        try:
+            result = client.admin_embed_all_skills()
+        except Exception as err:
+            console.print(f"[bold red]✗[/bold red] Embedding failed: {err}")
+            raise typer.Exit(code=1) from err
+        console.print(
+            f"[bold green]✓[/bold green] Embedded {result['embedded']}/{result['total']} skills"
+            f" ({result['failed']} failed)."
+        )
+        if result["failed"] == result["total"]:
+            console.print(
+                "[yellow]No skills were embedded. Install sentence-transformers:[/yellow]\n"
+                "  pip install sentence-transformers"
+            )
+
+    else:
+        raise typer.BadParameter(
+            f"Unknown action '{action}'. Use: pending | approve | reject | embed"
+        )
+
 
 @_admin_app.command("agents")
 def admin_agents(
-    action: str = typer.Argument(..., help="list | promote | staff | unstaff"),
-    agent_id: str = typer.Option(None, "--id", help="Agent ID (required for promote/staff/unstaff)"),
+    action: str = typer.Argument(..., help="list | promote | staff | unstaff | delete"),
+    agent_id: str = typer.Option(None, "--id", help="Agent ID (required for promote/staff/unstaff/delete)"),
     tier: int = typer.Option(None, "--tier", help="Tier level (required for promote)"),
+    force: bool = typer.Option(False, "--force", help="Skip confirmation prompt for delete"),
 ):
-    """Manage agents: list, promote (set tier), staff/unstaff (toggle staff flag)."""
+    """Manage agents: list, promote (set tier), staff/unstaff (toggle staff flag), delete (hard delete)."""
     client = require_auth()
 
     if action == "list":
@@ -1102,6 +1626,31 @@ def admin_agents(
             console.print(f"[bold red]✗[/bold red] Staff toggle failed: {err}")
             raise typer.Exit(code=1) from err
         console.print(f"[bold green]✓[/bold green] Agent {agent_id} is_staff={result['is_staff']}.")
+
+    elif action == "delete":
+        if not agent_id:
+            raise typer.BadParameter("--id is required for delete")
+        if not force:
+            confirm = typer.confirm(
+                f"Permanently delete agent {agent_id}? This cannot be undone.",
+                default=False,
+            )
+            if not confirm:
+                console.print("[dim]Cancelled.[/dim]")
+                raise typer.Exit()
+        try:
+            result = client.admin_delete_agent(agent_id)
+        except Exception as err:
+            console.print(f"[bold red]✗[/bold red] Delete failed: {err}")
+            raise typer.Exit(code=1) from err
+        console.print(
+            f"[bold green]✓[/bold green] Deleted agent '{result['name']}' ({result['agent_id']})."
+        )
+
+    else:
+        raise typer.BadParameter(
+            f"Unknown action '{action}'. Use: list | promote | staff | unstaff | delete"
+        )
 
 
 if __name__ == "__main__":

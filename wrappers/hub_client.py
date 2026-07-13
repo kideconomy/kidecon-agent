@@ -1,8 +1,11 @@
 import logging
 import uuid
+from typing import TYPE_CHECKING
 
 import httpx
-import keyring
+
+if TYPE_CHECKING:
+    from wrappers.profile_store import Profile
 
 logger = logging.getLogger(__name__)
 
@@ -17,13 +20,22 @@ class HubClient:
         self,
         hub_url: str = "http://localhost:8000",
         kideconomy_api_url: str = "",
+        profile: "Profile | None" = None,
     ):
         self.hub_url = hub_url.rstrip("/")
         self.kideconomy_api_url = kideconomy_api_url.rstrip("/")
-        self.agent_id = self._get_or_create_agent_id()
-        self.jwt = self._get_jwt()
+        if profile:
+            self.agent_id = profile.agent_id
+            self.jwt = profile.jwt
+            self._profile = profile
+        else:
+            self.agent_id = self._get_or_create_agent_id()
+            self.jwt = self._get_jwt()
+            self._profile = None
 
     def _get_or_create_agent_id(self) -> str:
+        import keyring
+
         agent_id = keyring.get_password(KEYRING_SERVICE, KEY_AGENT_ID)
         if not agent_id:
             agent_id = str(uuid.uuid4())
@@ -31,13 +43,11 @@ class HubClient:
         return agent_id
 
     def _get_jwt(self) -> str | None:
+        import keyring
+
         return keyring.get_password(KEYRING_SERVICE, KEY_JWT)
 
     def fetch_ke_token(self, username: str, password: str) -> str:
-        """Authenticate against KidEconomy and return a DRF token.
-
-        The password is used here and discarded — never stored.
-        """
         if not self.kideconomy_api_url:
             raise RuntimeError(
                 "KidEconomy API URL not configured. Run 'kidecon init' first.",
@@ -49,7 +59,14 @@ class HubClient:
         )
         response.raise_for_status()
         token = response.json()["token"]
+        import keyring
+
         keyring.set_password(KEYRING_SERVICE, KEY_KE_USERNAME, username)
+        if self._profile:
+            self._profile.ke_username = username
+            from wrappers.profile_store import save_profile
+
+            save_profile(self._profile)
         return token
 
     def register(
@@ -58,8 +75,9 @@ class HubClient:
         ke_token: str | None = None,
         discord_user_id: str | None = None,
         platform: str = "cli",
+        role: str = "standalone",
     ) -> str:
-        payload: dict = {"agent_id": self.agent_id, "name": name, "platform": platform}
+        payload: dict = {"agent_id": self.agent_id, "name": name, "platform": platform, "role": role}
         if ke_token:
             payload["ke_token"] = ke_token
         if discord_user_id:
@@ -70,10 +88,30 @@ class HubClient:
             json=payload,
             timeout=15,
         )
+        if response.status_code == 409:
+            raise RuntimeError(
+                "Agent name already registered with a different agent ID. "
+                "This happens when `kidecon init` generated a new agent_id. "
+                "Either delete the existing agent from the hub or restore "
+                "the original agent_id in your keyring."
+            ) from None
+        if response.status_code == 403:
+            detail = response.json().get("detail", "Agent has been deactivated.")
+            raise RuntimeError(f"Registration rejected: {detail}") from None
+        if response.status_code == 401:
+            raise RuntimeError("KidEconomy token rejected by the hub.") from None
         response.raise_for_status()
         data = response.json()
         self.jwt = data["jwt"]
-        keyring.set_password(KEYRING_SERVICE, KEY_JWT, self.jwt)
+        if self._profile:
+            self._profile.jwt = self.jwt
+            from wrappers.profile_store import save_profile
+
+            save_profile(self._profile)
+        else:
+            import keyring
+
+            keyring.set_password(KEYRING_SERVICE, KEY_JWT, self.jwt)
         return self.jwt
 
     def _auth_headers(self) -> dict:
@@ -154,14 +192,29 @@ class HubClient:
             definition=skill_card.get("definition"),
         )
 
-    def discover_skills(self, query: str) -> list[dict]:
+    def discover_skills(self, query: str, vector: bool = False) -> list[dict]:
+        params: dict = {"q": query}
+        if vector:
+            params["vector"] = "true"
         response = httpx.get(
             f"{self.hub_url}/api/skills/discover",
-            params={"q": query},
+            params=params,
             headers=self._auth_headers(),
         )
         response.raise_for_status()
         return response.json().get("skills", [])
+
+    def get_skill(self, skill_id: str) -> dict | None:
+        """Fetch a single skill definition by ID."""
+        response = httpx.get(
+            f"{self.hub_url}/api/skills/{skill_id}",
+            headers=self._auth_headers(),
+            timeout=10.0,
+        )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return response.json()
 
     def get_tier(self) -> int:
         response = httpx.get(
@@ -205,6 +258,15 @@ class HubClient:
         response.raise_for_status()
         return response.json()
 
+    def admin_embed_all_skills(self) -> dict:
+        response = httpx.post(
+            f"{self.hub_url}/api/admin/skills/embed_all",
+            headers=self._auth_headers(),
+            timeout=60.0,
+        )
+        response.raise_for_status()
+        return response.json()
+
     def admin_list_agents(self) -> list[dict]:
         response = httpx.get(
             f"{self.hub_url}/api/admin/agents",
@@ -226,6 +288,14 @@ class HubClient:
         response = httpx.post(
             f"{self.hub_url}/api/admin/agents/{agent_id}/staff",
             json={"is_staff": is_staff},
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def admin_delete_agent(self, agent_id: str) -> dict:
+        response = httpx.delete(
+            f"{self.hub_url}/api/admin/agents/{agent_id}",
             headers=self._auth_headers(),
         )
         response.raise_for_status()

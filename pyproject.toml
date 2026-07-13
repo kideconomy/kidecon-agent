@@ -201,3 +201,6 @@ force-single-line = true
 minversion = "8.0"
 python_files = ["test_*.py"]
 asyncio_mode = "auto"
+markers = [
+    "integration: tests that call the real LLM via OpenRouter",
+]

@@ -108,7 +108,7 @@ Per-turn canonical transition: `IDLE -> ORIENT -> [PLAN -> EXECUTE -> REFLECT ->
 - **Output:** `Context = {classification, normalization, recall_block, session_history, suggested_tier, active_plan}`.
 
 **PLAN** -- `plan(context) -> list[Step]`  *(strong/coding only)*
-- One `strong`-model structured call returning a JSON list of steps. Each `Step = {action, params, rationale}` where `action` is one of `{llm, hub_call, local_tool, memory_write, message_user, recall_more, user_script}`.
+- One `strong`-model structured call returning a JSON list of steps. Each `Step = {action, params, rationale}` where `action` is one of `{llm, hub_call, local_tool, memory_write, message_user, recall_more, user_script, delegate}`.
 - Simple turns yield a single `llm` step (degenerate plan). Complex turns yield a multi-step recipe. The active plan is written to `memory/PLAN.md` (scratch, mutable) so a multi-message task can resume.
 - Bounded replan: if EXECUTE hits mid-step uncertainty (detected via `_has_uncertainty`), escalate the **current step** to the `strong` model; if still uncertain and tier was `daily`, re-enter PLAN **once**.
 
@@ -503,3 +503,60 @@ These properties must hold for the architecture to be correct:
 - No egress full-rewrite normalization (v1 stores normalized alongside raw, dispatches raw).
 - No age/COPPA branching -- uniform non-staff access; staff (hub tier 3) is the only elevated path and is server-side.
 - No adopting the agentskills.io SKILL.md standard now (deferred future decision).
+
+---
+
+## 14. Orchestrator Delegation (multi-agent swarm)
+
+### 14.1 Overview
+
+When the agent role is `orchestrator`, the cognitive engine gains an additional PLAN action: `delegate`. This allows the orchestrator to route Discord DMs to worker agents via A2A messages.
+
+**Principle:** All agents share the same cognitive engine. The orchestrator is a regular agent with an additive overlay — it still runs the full ORIENT→PLAN→EXECUTE→REFLECT→LEARN→RESPOND cycle. The `delegate` action is just another step dispatch.
+
+### 14.2 PLAN action extension
+
+The `action` enum in `PLAN_SCHEMA` includes `delegate`:
+
+```json
+{
+  "action": "delegate",
+  "params": {
+    "task": "fix bug X",
+    "task_type": "coding"
+  },
+  "rationale": "This is a coding task that coding-bot handles"
+}
+```
+
+### 14.3 Delegate dispatch
+
+`_dispatch_step("delegate")` calls `wrappers/orchestrator.py`:
+
+1. `load_worker_roster()` — reads profiles from `~/.config/kidecon/agents/*.json`, filters by `role=worker`, checks PID liveness via `os.kill(pid, 0)`
+2. `select_worker(roster, task)` — picks the best online worker (rule-based: name match, then round-robin)
+3. `delegate_task(client, worker, task_text, task_type)` — sends `POST /api/messages/send` with `type="task_request"` to the worker
+4. Tracks the delegation in `_pending_delegations[task_msg_id] = {worker_name, discord_user_id}`
+
+### 14.4 A2A ingress safety
+
+Workers receive A2A `task_request` messages through the same poll loop. The `source` in the payload is `"a2a"`, which triggers the same ingress safety check as Discord DMs (`cognition.py:307` checks `source in ("discord", "discord_dm", "a2a")`).
+
+### 14.5 Worker A2A response
+
+After the worker's cognitive engine completes processing a `task_request`, it:
+
+1. Responds to the `task_request` message via `client.respond_to_message()`
+2. Sends a NEW `task_result` A2A message back to the orchestrator via `client.send_message()` with `reply_to` set to the original task request ID
+
+### 14.6 Orchestrator A2A relay
+
+The orchestrator's runtime (`runtime.py`) detects `task_result`/`task_refuse`/`task_failure` messages in the poll loop and:
+
+1. Looks up the pending delegation by `reply_to`
+2. Calls `relay_to_discord()` to send a follow-up Discord DM via the hub's bridge
+3. Acknowledges the worker's response via `client.respond_to_message()`
+
+### 14.7 Worker roster (no hub discovery)
+
+The orchestrator's worker roster is maintained **locally**. It reads profiles from `~/.config/kidecon/agents/*.json` and checks liveness via PID files. The hub is a message relay only — it is never queried for worker discovery. This ensures the swarm operates independently of the hub for instance management; the hub is only needed for A2A message routing between agents.

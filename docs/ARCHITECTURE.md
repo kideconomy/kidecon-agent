@@ -71,6 +71,50 @@ All secrets live in the OS keyring under service `kidecon-agent`:
 
 No secret is ever written to disk or logged. `kidecon key list` masks all values.
 
+## Multi-Agent Profile Store
+
+The CLI now supports multiple agent profiles on the same machine, replacing the single-keyring model:
+
+```
+~/.config/kidecon/
+  kidecon.yaml                    # shared config (hub URL, KE API URL, LLM models)
+  agents/
+    johnnys-laptop.json           # {agent_id, name, jwt, ke_username, role}
+    coding-bot.json               # {agent_id, name, jwt, ke_username, role}
+    .active                       # name of the currently active profile
+```
+
+**Profile commands:** `kidecon agents list`, `kidecon agents create --name <n> --role orchestrator|worker|standalone`, `kidecon agents delete --name <n>`.
+
+Profiles are created with `chmod 0600` to protect the JWT. Legacy keyring agents are auto-migrated on first use.
+
+**Worker roster** — the orchestrator loads its worker list from local profiles, not from the hub. It checks liveness via PID files. The hub is a message relay only, not a discovery service.
+
+## Background Process Management
+
+Agents can run as daemon/background processes:
+
+- `kidecon start --name <n> --background` — spawns via `subprocess.Popen(start_new_session=True)`, writes PID to `~/.config/kidecon/agents/<n>.pid`, logs to `~/kidecon/logs/<n>.log`
+- `kidecon agents stop --name <n>` — sends SIGTERM, waits 10s, then SIGKILL
+- `kidecon agents status` — shows running/stopped state for all profiles
+- `kidecon agents logs --name <n>` — tails the agent's log file
+
+## Orchestrator Delegation
+
+When the orchestrator receives a Discord DM:
+
+1. ORIENT classifies the request (code, research, general, etc.)
+2. PLAN step produces `{action: "delegate", params: {task, task_type}}`
+3. `_dispatch_step("delegate")` loads the worker roster from profiles, selects the best online worker, sends an A2A `task_request` message to the worker, and responds to the user with "Working on it…"
+4. The worker runs its full cognitive cycle and responds via A2A `task_result`
+5. In a later poll cycle, the orchestrator receives the `task_result`, relays the result to the Discord user via the hub's bridge, and tracks the pending delegation in `pending_delegations`
+
+**A2A message types** (FIPA ACL-derived):
+- `task_request` — orchestrator → worker
+- `task_result` — worker → orchestrator
+- `task_refuse` — worker → orchestrator
+- `task_failure` — worker → orchestrator
+
 ## Safety Boundaries
 
 - **Tool gate** (`kidecon.yaml` `tool_gate`): `allow` / `deny` / `require_approval` lists gate every tool invocation.
