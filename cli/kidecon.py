@@ -1279,6 +1279,8 @@ def doctor():
     # Each entry: (keyring_name, description, required)
     required_keys: list[tuple[str, str, bool]] = [
         ("openrouter", "LLM inference via OpenRouter", True),
+        # Optional integrations — present only when the operator opts in.
+        ("lexor", "Lexor legal MCP (staff-only, read-only)", False),
     ]
 
     py_ver = platform.python_version()

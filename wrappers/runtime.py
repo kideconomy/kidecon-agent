@@ -77,6 +77,16 @@ def _build_engine(client: "HubClient", config: dict, is_orchestrator: bool = Fal
     skill_loader = SkillLoader(client)
     skill_loader.refresh()
 
+    lexor_client = None
+    with contextlib.suppress(Exception):
+        from wrappers.lexor_client import build_lexor_client
+
+        lexor_client = build_lexor_client(config)
+    if lexor_client is not None:
+        logger.info("Lexor client enabled (role=%s)", lexor_client.role)
+    else:
+        logger.info("Lexor client disabled — agent runs without Lexor capability")
+
     return CognitiveEngine(
         factory=factory,
         safety=safety,
@@ -93,6 +103,7 @@ def _build_engine(client: "HubClient", config: dict, is_orchestrator: bool = Fal
         skill_loader=skill_loader,
         agent_id=client.agent_id,
         is_orchestrator=is_orchestrator,
+        lexor_client=lexor_client,
     )
 
 

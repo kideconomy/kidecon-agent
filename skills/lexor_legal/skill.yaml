@@ -1,0 +1,30 @@
+name: lexor-legal
+version: 0.1.0
+category: legal
+description: >-
+  Read-only informational access to the Lexor legal engineering platform.
+  Lets the agent answer questions about entity formation requirements, legal
+  terms, taxonomy, compliance, and registered entities by calling Lexor MCP
+  read tools directly. Staff-only; read-only legal-role token; no drafting,
+  registration, or triggering.
+entrypoint: handler.py
+permissions:
+  tools: []
+  network: true
+config:
+  base_url:
+    default: ""
+    description: Lexor MCP base URL, e.g. http://localhost:8000.
+  role:
+    default: "legal"
+    description: >-
+      RBAC role of the per-agent JWT. Must match the token issued by the
+      Lexor admin. 'legal' is read-only and recommended.
+  timeout:
+    default: 15
+    description: Per-call HTTP timeout in seconds.
+  enabled:
+    default: false
+    description: >-
+      Master switch. When false, the agent has no Lexor capability and
+      behaves exactly as before.

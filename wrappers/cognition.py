@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass
 from dataclasses import field
@@ -12,6 +13,7 @@ from wrappers.safety_firewall import INGRESS_CANNED
 
 if TYPE_CHECKING:
     from wrappers.hub_client import HubClient
+    from wrappers.lexor_client import LexorClient
     from wrappers.memory import MemoryStore
     from wrappers.safety_firewall import SafetyFirewall
     from wrappers.session import SessionStore
@@ -93,6 +95,7 @@ PLAN_SCHEMA: dict = {
                             "enum": [
                                 "llm",
                                 "hub_call",
+                                "lexor_call",
                                 "local_tool",
                                 "memory_write",
                                 "message_user",
@@ -200,9 +203,12 @@ REFLECT_PROMPT = (
 
 PLAN_PROMPT = (
     "You are the PLAN phase of an edge cognitive engine. Decompose the user's turn into ordered "
-    "steps. Each step has an action (one of llm, hub_call, local_tool, memory_write, message_user, "
-    "recall_more, user_script), params, and a one-line rationale. Simple turns yield a single "
-    "`llm` step. Do not include persona blocks in the plan.\n\n"
+    "steps. Each step has an action (one of llm, hub_call, lexor_call, local_tool, memory_write, "
+    "message_user, recall_more, user_script), params, and a one-line rationale. Simple turns "
+    "yield a single `llm` step. Do not include persona blocks in the plan. If the user asks about "
+    "entity formation, legal terms, taxonomy, or compliance, you may use the `lexor_call` action "
+    "with an allowed Lexor read-only tool (see the Lexor instructions block). Lexor is "
+    "informational only — never attempt draft/register/trigger tools.\n\n"
     "USER MESSAGE:\n{message}\n\nCLASSIFICATION:\n{classification}\n\n"
     "Respond ONLY with the structured JSON."
 )
@@ -251,6 +257,44 @@ def _has_uncertainty(text: str) -> bool:
     return any(marker in lower for marker in UNCERTAINTY_MARKERS)
 
 
+def _compact_str(obj) -> str:
+    """Compact JSON-ish string for trace step output (Lexor results, etc.)."""
+    import json
+
+    if isinstance(obj, str):
+        return obj
+    try:
+        return json.dumps(obj, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return str(obj)
+
+
+_LEXOR_CACHE_SENTINEL = object()
+_LEXOR_INSTRUCTIONS_CACHE: object = _LEXOR_CACHE_SENTINEL
+
+
+def _load_lexor_instructions() -> str | None:
+    """Load and cache the Lexor instructions.md shipped with the lexor-legal skill.
+
+    Cached at module level so it's read from disk at most once per process.
+    Returns None if the file is missing — Lexor stays enabled but the LLM gets
+    no inventory block (degraded but safe).
+    """
+    global _LEXOR_INSTRUCTIONS_CACHE
+    if _LEXOR_INSTRUCTIONS_CACHE is not _LEXOR_CACHE_SENTINEL:
+        return _LEXOR_INSTRUCTIONS_CACHE if isinstance(_LEXOR_INSTRUCTIONS_CACHE, str) else None  # type: ignore[return-value]
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent.parent / "skills" / "lexor_legal" / "instructions.md"
+    if path.exists():
+        with contextlib.suppress(Exception):
+            _LEXOR_INSTRUCTIONS_CACHE = path.read_text()
+            return _LEXOR_INSTRUCTIONS_CACHE  # type: ignore[return-value]
+    logger.warning("Could not load lexor instructions.md — Lexor degraded")
+    _LEXOR_INSTRUCTIONS_CACHE = None
+    return None
+
+
 class CognitiveEngine:
     """Stateful per-turn cognitive engine (ORIENT -> PLAN -> EXECUTE -> REFLECT -> LEARN -> RESPOND).
 
@@ -278,6 +322,7 @@ class CognitiveEngine:
         skill_loader: SkillLoader | None = None,
         agent_id: str | None = None,
         is_orchestrator: bool = False,
+        lexor_client: LexorClient | None = None,
     ) -> None:
         self.factory = factory
         self.safety = safety
@@ -294,6 +339,7 @@ class CognitiveEngine:
         self.skill_loader = skill_loader
         self.agent_id = agent_id
         self.is_orchestrator = is_orchestrator
+        self.lexor_client = lexor_client
         self._ensure_persona()
 
     def _ensure_persona(self) -> None:
@@ -358,7 +404,11 @@ class CognitiveEngine:
         # Egress safety runs BEFORE REFLECT/LEARN: reflection/learning writes
         # only happen for turns that have already cleared egress (spec §8.3).
         # An egress-blocked result is never learned into persona/memory.
-        egress_passed, final_result = self._check_egress(source, result, msg_id)
+        # Lexor-bearing turns run egress regardless of source: Lexor output is
+        # sensitive legal corpus content and must not bypass the firewall on a
+        # non-Discord path (e.g. a2a).
+        used_lexor = any(t.get("action") == "lexor_call" for t in trace)
+        egress_passed, final_result = self._check_egress(source, result, msg_id, used_lexor=used_lexor)
 
         self._append_session(source, context, text, final_result, tier, msg_id)
 
@@ -387,9 +437,14 @@ class CognitiveEngine:
             return not self._is_fast(tier)
         return bool(self.cognition.get("reflect_on_daily", False))
 
-    def _check_egress(self, source: str, result: str, msg_id: str) -> tuple[bool, str]:
-        """Run egress safety. Returns (passed, final_result)."""
-        if source not in ("discord", "discord_dm"):
+    def _check_egress(self, source: str, result: str, msg_id: str, *, used_lexor: bool = False) -> tuple[bool, str]:
+        """Run egress safety. Returns (passed, final_result).
+
+        Runs for Discord sources, and additionally for any turn that used a
+        ``lexor_call`` step (Lexor output is sensitive legal corpus content and
+        must not bypass the firewall on a non-Discord path).
+        """
+        if source not in ("discord", "discord_dm") and not used_lexor:
             return True, result
         safe, reason = self.safety.check_egress(result)
         if not safe:
@@ -494,6 +549,11 @@ class CognitiveEngine:
             index_summary = self.skill_loader.get_index_summary()
             if index_summary:
                 system_tail_parts.append(index_summary)
+        lexor_client = getattr(self, "lexor_client", None)
+        if lexor_client is not None and self.agent_hub_tier >= lexor_client.min_hub_tier:
+            lexor_block = _load_lexor_instructions()
+            if lexor_block:
+                system_tail_parts.append(lexor_block)
         if context.recall_block:
             system_tail_parts.append("Relevant memory:\n" + context.recall_block)
         system_content = "\n\n".join(system_tail_parts)
@@ -627,6 +687,10 @@ class CognitiveEngine:
             except Exception:
                 logger.exception("hub_call step failed: %s", tool)
                 return "hub_call failed"
+        if action == "lexor_call":
+            tool = step.params.get("tool", "")
+            params = step.params.get("params", {})
+            return self._run_lexor_call(tool, params)
         if action == "local_tool":
             return self._run_local_tool(step.params)
         if action == "memory_write":
@@ -650,11 +714,9 @@ class CognitiveEngine:
         return f"unknown action: {action}"
 
     def _handle_delegation(self, step: Step, context: Context) -> str:
-        from wrappers.orchestrator import (
-            delegate_task,
-            load_worker_roster,
-            select_worker,
-        )
+        from wrappers.orchestrator import delegate_task
+        from wrappers.orchestrator import load_worker_roster
+        from wrappers.orchestrator import select_worker
 
         task_text = step.params.get("task", context.text)
         task_type = step.params.get("task_type", "general")
@@ -698,6 +760,33 @@ class CognitiveEngine:
             tools.file_append_markdown(params.get("path", ""), params.get("content", ""))
             return "appended"
         return f"unknown local tool: {name}"
+
+    def _run_lexor_call(self, tool: str, params: dict) -> str:
+        """Dispatch a read-only Lexor tool call.
+
+        Returns a compact string for the step output / trace. Lexor results are
+        deterministically PII-scrubbed before entering the trace. When Lexor is
+        disabled (no client) or returns an error, this is a no-op that lets the
+        turn continue without Lexor context.
+        """
+        lexor_client = getattr(self, "lexor_client", None)
+        if lexor_client is None:
+            logger.debug("lexor_call step ignored — Lexor not configured")
+            return ""
+        try:
+            from wrappers.scrub import scrub
+
+            resp = lexor_client.call(tool, params, self.agent_hub_tier)
+        except Exception:
+            logger.exception("lexor_call step failed: %s", tool)
+            return (
+                "Lexor lookup failed. Reason: an unexpected error occurred during the call. "
+                "To proceed: the turn continues without Lexor context; try again or contact support."
+            )
+        if resp.get("error"):
+            return str(resp["error"])
+        scrubbed = scrub(resp.get("result"))
+        return _compact_str(scrubbed)
 
     def _call_llm(self, messages: list[dict], model: str, tier: str) -> str:
         try:
@@ -824,7 +913,7 @@ class CognitiveEngine:
                 self._track_pushed_lesson(lesson_id)
             logger.info("Pushed lesson: %s", response)
             from wrappers.tools import message_user
-            msg = f"[Hermes] Shared 1 lesson with the KidEconomy network: \"{scrubbed_title}\" (id: {lesson_id})"
+            msg = f'[Hermes] Shared 1 lesson with the KidEconomy network: "{scrubbed_title}" (id: {lesson_id})'
             message_user(msg)
             return response
         except Exception:
@@ -833,8 +922,8 @@ class CognitiveEngine:
 
     @staticmethod
     def _track_pushed_lesson(lesson_id: str) -> list:
-        from pathlib import Path
         import json as _json
+        from pathlib import Path
         path = Path.home() / "kidecon" / "memory" / ".pushed_lessons.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         existing: list = []

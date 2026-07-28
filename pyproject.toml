@@ -113,6 +113,8 @@ force-single-line = true
     "TRY300",  # return inside try is intentional for swallowed-push flow
     "E501",    # long schema/prompt strings are intentional
     "TC001",   # NormalizationResult used at runtime in dataclass default
+    "PLW0603", # _LEXOR_INSTRUCTIONS_CACHE is an intentional module-level cache
+    "C901",    # _dispatch_step complexity from exhaustive action dispatch (incl. lexor_call)
 ]
 "wrappers/memory.py" = [
     "PLW0603", # _taxonomy_cache global is an intentional module-level cache
@@ -130,6 +132,18 @@ force-single-line = true
     "S105",    # REDACT_TOKEN is a redaction marker, not a password
     "RET504",  # chained .sub calls read better with intermediate vars
 ]
+"wrappers/lexor_client.py" = [
+    "PLC0415", # lazy import of keyring avoids import-time backend requirement
+    "PLR2004", # HTTP status codes (401/403/400/500) are self-documenting
+    "PLR0911", # call() has multiple return paths for each HTTP/error state
+    "PLR0913", # LexorClient.__init__ takes config deps by design
+    "C901",    # call() complexity is inherent to exhaustive error mapping
+    "SLF001",  # build_lexor_client probes _read_jwt to validate provisioning
+    "TRY003",  # transparent error messages are long by design (§4.3)
+    "EM101",   # string literal in transparent message is acceptable
+    "EM102",   # f-string literal in transparent message is acceptable
+    "E501",    # transparent messages can be long
+]
 "shared/normalizer/normalizer.py" = [
     "PLW0603", # _taxonomy_cache global is an intentional module-level cache
     "PLR0913", # _match_axis params mirror the hub canonical signature
@@ -146,6 +160,11 @@ force-single-line = true
     "E501",   # test assertion lines can be long
     "S105",   # test "password" strings are not real secrets
     "SIM117", # nested with statements are more readable in tests
+    "EM101",  # string literal in test exception is acceptable
+    "EM102",  # f-string literal in test exception is acceptable
+    "TRY003", # long exception message in test mock is acceptable
+    "PLR0913",# test helper builders take many params by design
+    "PLC0415",# inline imports in tests keep helpers self-contained
 ]
 
 # Skills live in hyphenated directories (kebab-case skill names) and use
