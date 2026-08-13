@@ -80,6 +80,7 @@ flowchart LR
 
 - All authenticated operations read the JWT from keyring via `_auth_headers()`.
 - If JWT is expired, the hub returns 401; the caller must re-run `register()`.
+- A **403** is a hard block (not expiry): the hub re-verifies the agent's KidEconomy user on every request and returns 403 when the KE account is disabled (`ban_user`), the agent is deactivated, or registration would re-link an agent to a different KE user. The runtime loop surfaces the hub's `detail`, marks itself offline, and exits non-zero without retrying. See `docs/HUB_CONTRACT.md` §2.6.
 
 ---
 

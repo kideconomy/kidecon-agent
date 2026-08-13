@@ -27,6 +27,9 @@ KEY_KE_USERNAME = "kideconomy_username"
 
 VALID_ROLES = {"orchestrator", "worker", "standalone"}
 
+# Re-export the shared helper under the local name used throughout this module.
+from wrappers._http import hub_detail as _response_detail  # noqa: E402
+
 
 class Profile:
     """An agent profile stored on disk."""
@@ -233,10 +236,13 @@ def create_profile(
             timeout=15,
         )
         if response.status_code == 409:
-            detail = response.json().get("detail", "Name already taken")
+            detail = _response_detail(response, "Name already taken")
             raise RuntimeError(f"Agent name '{name}' already registered. Use a different name or delete the existing profile.")
         if response.status_code == 403:
-            detail = response.json().get("detail", "Agent has been deactivated")
+            detail = _response_detail(
+                response,
+                "Agent has been deactivated or is linked to a different KidEconomy account.",
+            )
             raise RuntimeError(f"Registration rejected: {detail}")
         if response.status_code == 401:
             raise RuntimeError("KidEconomy token rejected by the hub. Run 'kidecon agents create' again with the correct credentials.")
@@ -259,6 +265,17 @@ def rotate_jwt(profile: Profile, hub_url: str, ke_token: str) -> str:
         json=payload,
         timeout=15,
     )
+    if response.status_code == 403:
+        detail = _response_detail(
+            response,
+            "Agent has been deactivated or is linked to a different KidEconomy account.",
+        )
+        raise RuntimeError(f"Re-registration rejected: {detail}")
+    if response.status_code == 401:
+        raise RuntimeError("KidEconomy token rejected by the hub.")
+    if response.status_code == 409:
+        detail = _response_detail(response, "Agent name already taken.")
+        raise RuntimeError(f"Re-registration failed: {detail}")
     response.raise_for_status()
     data = response.json()
     profile.jwt = data["jwt"]

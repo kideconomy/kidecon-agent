@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from wrappers._http import hub_detail
+
 if TYPE_CHECKING:
     from wrappers.profile_store import Profile
 
@@ -96,7 +98,10 @@ class HubClient:
                 "the original agent_id in your keyring."
             ) from None
         if response.status_code == 403:
-            detail = response.json().get("detail", "Agent has been deactivated.")
+            detail = hub_detail(
+                response,
+                "Agent has been deactivated or is linked to a different KidEconomy account.",
+            )
             raise RuntimeError(f"Registration rejected: {detail}") from None
         if response.status_code == 401:
             raise RuntimeError("KidEconomy token rejected by the hub.") from None
@@ -125,6 +130,16 @@ class HubClient:
             json={"tool_name": tool_name, "params": params},
             headers=self._auth_headers(),
         )
+        if response.status_code == 403:
+            detail = hub_detail(
+                response,
+                "Access denied for this tool.",
+            )
+            raise RuntimeError(f"Tool '{tool_name}' rejected by hub: {detail}") from None
+        if response.status_code == 401:
+            raise RuntimeError(
+                "Not authorized — JWT may be expired. Re-run 'kidecon setup'."
+            ) from None
         response.raise_for_status()
         return response.json()
 
@@ -217,12 +232,25 @@ class HubClient:
         return response.json()
 
     def get_tier(self) -> int:
+        return self.get_agent_profile(self.agent_id).get("tier", 1)
+
+    def get_agent_profile(self, agent_id: str) -> dict:
         response = httpx.get(
-            f"{self.hub_url}/api/agent/{self.agent_id}",
+            f"{self.hub_url}/api/agent/{agent_id}",
             headers=self._auth_headers(),
         )
+        if response.status_code == 403:
+            detail = hub_detail(
+                response,
+                "Access blocked — this agent or its KidEconomy account has been disabled.",
+            )
+            raise RuntimeError(f"Profile fetch rejected by hub: {detail}") from None
+        if response.status_code == 401:
+            raise RuntimeError(
+                "Not authorized — JWT may be expired. Re-run 'kidecon setup'."
+            ) from None
         response.raise_for_status()
-        return response.json().get("tier", 1)
+        return response.json()
 
     def update_status(self, status: str) -> dict:
         response = httpx.put(
@@ -296,6 +324,31 @@ class HubClient:
     def admin_delete_agent(self, agent_id: str) -> dict:
         response = httpx.delete(
             f"{self.hub_url}/api/admin/agents/{agent_id}",
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def admin_list_users(self) -> list[dict]:
+        response = httpx.get(
+            f"{self.hub_url}/api/admin/users",
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json().get("users", [])
+
+    def admin_ban_user(self, username: str, reason: str | None = None) -> dict:
+        response = httpx.post(
+            f"{self.hub_url}/api/admin/ban_user/{username}",
+            json={"reason": reason},
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def admin_unban_user(self, username: str) -> dict:
+        response = httpx.post(
+            f"{self.hub_url}/api/admin/users/{username}/unban",
             headers=self._auth_headers(),
         )
         response.raise_for_status()
@@ -376,7 +429,12 @@ class HubClient:
         kind: str | None = None,
         limit: int = 50,
     ) -> list[dict]:
-        """Fetch lessons originated by this agent."""
+        """Fetch lessons owned by this agent's KidEconomy user.
+
+        Lessons are user-scoped on the hub, so they are shared across all
+        agents registered under the same KidEconomy account — an agent can
+        be dropped without losing the user's lesson history.
+        """
         params: dict = {"limit": limit}
         if status:
             params["status"] = status

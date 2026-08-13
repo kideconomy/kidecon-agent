@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from shared.llm_clients.factory import LLMClientFactory
+from wrappers._http import hub_detail
 from wrappers.cognition import CognitiveEngine
 from wrappers.memory import MemoryStore
 from wrappers.safety_firewall import SafetyFirewall
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _HTTP_UNAUTHORIZED = 401
+_HTTP_FORBIDDEN = 403
 
 
 def _init_llm(config: dict) -> tuple[Any, SafetyFirewall, dict, str, str, float]:
@@ -156,6 +158,23 @@ def run_forever(client: "HubClient", config: dict, is_orchestrator: bool = False
         except httpx.HTTPStatusError as e:
             if e.response.status_code == _HTTP_UNAUTHORIZED:
                 logger.fatal("JWT expired — run 'kidecon setup' to re-register")
+                with contextlib.suppress(Exception):
+                    client.update_status("offline")
+                sys.exit(1)
+            if e.response.status_code == _HTTP_FORBIDDEN:
+                detail = hub_detail(
+                    e.response,
+                    "Hub blocked this agent (HTTP 403).",
+                )
+                logger.fatal(
+                    "Access blocked by the hub. Reason: %s. "
+                    "To regain access, contact your administrator, or "
+                    "run 'kidecon setup' / 'kidecon agents create' with "
+                    "the correct KidEconomy account.",
+                    detail,
+                )
+                with contextlib.suppress(Exception):
+                    client.update_status("offline")
                 sys.exit(1)
             logger.exception("HTTP %d polling — retrying in %.1fs", e.response.status_code, backoff)
             time.sleep(backoff)

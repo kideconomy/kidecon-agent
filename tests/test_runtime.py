@@ -209,6 +209,62 @@ class TestHTTPErrors:
 
         assert exc_info.value.code == 1
 
+    def test_403_ke_disabled_exits_cleanly(self, mock_client, config, mock_factory):
+        response = MagicMock()
+        response.status_code = 403
+        response.json.return_value = {
+            "detail": (
+                "Access blocked. Reason: your KidEconomy account has been "
+                "disabled. To regain access, contact your administrator."
+            )
+        }
+        request = MagicMock()
+        mock_client.poll_messages.side_effect = httpx.HTTPStatusError(
+            "Forbidden",
+            request=request,
+            response=response,
+        )
+
+        mock_keyring = MagicMock()
+        mock_keyring.get_password.return_value = "fake-api-key"
+
+        with (
+            patch("shared.llm_clients.factory.LLMClientFactory.create", return_value=mock_factory),
+            patch.dict("sys.modules", {"keyring": mock_keyring}),
+        ):
+            from wrappers.runtime import run_forever  # noqa: PLC0415
+
+            with pytest.raises(SystemExit) as exc_info:
+                run_forever(mock_client, config)
+
+        assert exc_info.value.code == 1
+        mock_client.update_status.assert_any_call("offline")
+
+    def test_403_agent_deactivated_exits_cleanly(self, mock_client, config, mock_factory):
+        response = MagicMock()
+        response.status_code = 403
+        response.json.return_value = {"detail": "Agent has been deactivated."}
+        request = MagicMock()
+        mock_client.poll_messages.side_effect = httpx.HTTPStatusError(
+            "Forbidden",
+            request=request,
+            response=response,
+        )
+
+        mock_keyring = MagicMock()
+        mock_keyring.get_password.return_value = "fake-api-key"
+
+        with (
+            patch("shared.llm_clients.factory.LLMClientFactory.create", return_value=mock_factory),
+            patch.dict("sys.modules", {"keyring": mock_keyring}),
+        ):
+            from wrappers.runtime import run_forever  # noqa: PLC0415
+
+            with pytest.raises(SystemExit):
+                run_forever(mock_client, config)
+
+        assert mock_client.poll_messages.call_count == 1
+
 
 class TestResponseFormat:
     def test_responds_with_accepted_true(self, mock_client, config, mock_factory):

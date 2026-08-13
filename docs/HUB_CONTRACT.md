@@ -50,6 +50,12 @@ All paths are relative to `hub_url` (default `http://localhost:8000`; production
 3. **Expiry.** Hub JWT expires at `JWT_EXPIRE_MINUTES` (default 1440 = 24h). On expiry the edge gets 401. The edge must re-run `register()` (R1), which rotates the secret. `doctor` detects 401s and offers re-register (F11).
 4. **No refresh tokens.** Re-registration is the only rotation path. The edge does not cache credentials beyond the keyring.
 5. **Scope of the token.** The JWT identifies *this agent* to *the hub only*. It is not valid against `kidecon` core (DRF) or any other service. The edge must never present it elsewhere.
+6. **Hard 403 (account/agent state).** The hub re-verifies the agent's KidEconomy user on every authenticated request (TTL-cached ~300s) and returns **403** — distinct from 401 expiry — when:
+   - the KE account has been disabled (`ban_user`), or
+   - the agent row has been deactivated, or
+   - registration (R1) tries to re-link an agent already owned by a *different* KE user (ownership mismatch).
+
+   The hub distinguishes these cases **only** by the JSON `detail` string (no error code). The edge surfaces the real `detail` to the user in a three-part message (what / why / next), marks itself offline if reachable, and **exits non-zero** — it does **not** retry (these are hard states; auto re-register is impossible because the KE password is never persisted). Transient KE outages are fail-open at the hub, so a 403 here always reflects a genuine ban/deactivation/mismatch, never a flap.
 
 ---
 
@@ -119,11 +125,12 @@ This is a **v1.0** contract change. The edge will keep the polling client as the
 - [ ] Treats R5 responses as `200 + {result, error}`; checks `error` before trusting `result`.
 - [ ] Default poll interval ≥ 30s (hub auth is O(N) per request, §2).
 - [ ] On 401: re-registers via R1 (rotates secret); surfaces via `doctor`.
+- [ ] On 403: surfaces the hub's `detail` in a three-part (what/why/next) message, marks itself offline, and exits non-zero — does not retry. Covers KE-account-disabled, agent-deactivated, and ownership-mismatch (§2.6).
 - [ ] Uninstall path calls R4 `DELETE /api/agent/{id}` to revoke the JWT (US10).
 - [ ] Never imports `kidecon` or `kidecon-pm`; depends only on this contract.
 
 ---
 
 **Version:** v0.1 (de-facto, formalized from `AGENT_NETWORK_REFERENCE.md` §1.3 / §2.2)
-**Last updated:** 2026-07-05
+**Last updated:** 2026-08-12
 **Realizes:** reference §1.3, §1.7, §2.2, §4.6; edge gaps §1.4 (R3/R4/R10 wiring).

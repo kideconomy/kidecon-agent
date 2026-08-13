@@ -160,6 +160,17 @@ kidecon skills inspect    # full evaluation detail for a skill
 kidecon skills template   # generate a skill JSON template
 kidecon admin skills      # manage skills (staff only)
 kidecon admin agents      # manage agents (staff only)
+kidecon admin users       # manage users: list / ban / unban (staff only)
+```
+
+Admin commands require a **tier-3 staff agent** and are audited hub-side. Full usage for each
+command is available in the CLI itself:
+
+```bash
+kidecon admin --help            # all admin subcommands
+kidecon admin users --help      # list | ban | unban
+kidecon admin agents --help     # list | promote | staff | unstaff | delete
+kidecon admin skills --help     # pending | approve | reject | embed
 ```
 
 ## Layout

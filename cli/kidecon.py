@@ -45,6 +45,16 @@ app = typer.Typer(help="KidEconomy Agent CLI — lifecycle management for your K
 console = Console()
 
 
+def _print_aligned_columns(headers: tuple[str, ...], rows: list[tuple]) -> None:
+    """Print data as aligned text columns — no borders, easy to copy/paste."""
+    cols = list(zip(headers, *rows))
+    widths = [max(len(str(c)) for c in col) for col in cols]
+    header_line = "  ".join(h.ljust(w) for h, w in zip(headers, widths))
+    console.print(header_line, style="bold")
+    for row in rows:
+        console.print("  ".join(str(c).ljust(w) for c, w in zip(row, widths)))
+
+
 def _do_splash(ctx: typer.Context, *, no_splash: bool = False) -> None:
     import select
     import time
@@ -522,7 +532,9 @@ def agents_main(
 
 
 @_agents_app.command("list")
-def agents_list():
+def agents_list(
+    tier: int = typer.Option(None, "--tier", help="Filter agents by tier (1-3)"),
+):
     """List all local agent profiles."""
     names = list_profiles()
     if not names:
@@ -530,28 +542,45 @@ def agents_list():
         return
 
     active = get_active()
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Name")
-    table.add_column("Role")
-    table.add_column("Agent ID")
-    table.add_column("Status")
-    table.add_column("Active")
+    config = load_config()
+    hub_url = config["hub_url"]
 
+    rows = []
     for name in names:
         profile = load_profile(name)
         if not profile:
             continue
         pid = read_pid(profile)
-        status = "[green]running[/green]" if pid else "[dim]stopped[/dim]"
-        is_active = "[green]●[/green]" if name == active else ""
-        table.add_row(
-            name,
-            profile.role,
-            profile.agent_id[:8] + "…",
-            status,
-            is_active,
-        )
-    console.print(table)
+        status = "running" if pid else "stopped"
+        is_active = "●" if name == active else ""
+
+        agent_tier = "?"
+        agent_staff = "?"
+        if profile.jwt:
+            try:
+                client = HubClient(hub_url=hub_url, profile=profile)
+                info = client.get_agent_profile(profile.agent_id)
+                agent_tier = str(info.get("tier", "?"))
+                agent_staff = "yes" if info.get("is_staff") else "no"
+            except Exception:
+                logger.debug("Failed to fetch profile for %s", name, exc_info=True)
+
+        if tier is not None and str(tier) != agent_tier:
+            continue
+
+        rows.append((name, profile.role, agent_tier, agent_staff, status, is_active))
+
+    if not rows:
+        if tier is not None:
+            console.print(f"[dim]No agents found with tier {tier}.[/dim]")
+        else:
+            console.print("[dim]No agent profiles found.[/dim]")
+        return
+
+    _print_aligned_columns(
+        ("Name", "Role", "Tier", "Staff", "Status", "Active"),
+        rows,
+    )
 
 
 @_agents_app.command("create")
@@ -688,18 +717,44 @@ def panic(
         console.print(f"  [red]Deleted[/red] {keys_dir}")
 
     try:
-        import keyring
         cleared = 0
-        for key in ["hub_jwt", "agent_id", "kideconomy_username"]:
+        # Clear the 3 well-known internal keys
+        for key in [KEY_JWT, KEY_AGENT_ID, "kideconomy_username"]:
             try:
-                existing = keyring.get_password("kidecon-agent", key)
+                existing = keyring.get_password(KEYRING_SERVICE, key)
                 if existing:
-                    keyring.delete_password("kidecon-agent", key)
+                    keyring.delete_password(KEYRING_SERVICE, key)
                     cleared += 1
             except Exception:
                 pass
+
+        # Clear all registered API keys (api_key_<name>) from the keyring
+        for api_key_name in _load_key_index():
+            entry = f"api_key_{api_key_name}"
+            try:
+                existing = keyring.get_password(KEYRING_SERVICE, entry)
+                if existing:
+                    keyring.delete_password(KEYRING_SERVICE, entry)
+                    cleared += 1
+            except Exception:
+                pass
+
+        # Clear the special openrouter key if it exists
+        try:
+            or_key = keyring.get_password(KEYRING_SERVICE, "api_key_openrouter")
+            if or_key:
+                keyring.delete_password(KEYRING_SERVICE, "api_key_openrouter")
+                cleared += 1
+        except Exception:
+            pass
+
         if cleared:
             console.print(f"  [red]Cleared[/red] {cleared} keyring entry/entries")
+
+        # Delete the API key index file
+        if KEYS_INDEX_PATH.exists():
+            KEYS_INDEX_PATH.unlink()
+            console.print(f"  [red]Deleted[/red] {KEYS_INDEX_PATH}")
     except Exception:
         pass
 
@@ -820,12 +875,13 @@ def agents_logs(
 def agents_status(
     name: str = typer.Option(None, "--name", help="Show status for a specific agent"),
 ):
-    """Show running/stopped state for agents."""
+    """Show running/stopped state for agents, with tier and staff info."""
     if name:
-        profiles = [load_profile(name)]
-        if not profiles[0]:
+        profile = load_profile(name)
+        if not profile:
             console.print(f"[bold red]✗[/bold red] Profile '{name}' not found.")
             raise typer.Exit(code=1)
+        profiles = [profile]
     else:
         profiles = list_profile_objects()
 
@@ -833,23 +889,90 @@ def agents_status(
         console.print("[dim]No agent profiles found.[/dim]")
         return
 
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Name")
-    table.add_column("Role")
-    table.add_column("PID")
-    table.add_column("Status")
+    config = load_config()
+    hub_url = config["hub_url"]
 
+    rows = []
     for p in profiles:
         pid = read_pid(p)
-        if pid:
-            status = "[green]running[/green]"
-            pid_str = str(pid)
-        else:
-            status = "[dim]stopped[/dim]"
-            pid_str = "—"
-        table.add_row(p.name, p.role, pid_str, status)
+        pid_str = str(pid) if pid else "—"
+        status = "running" if pid else "stopped"
 
-    console.print(table)
+        agent_tier = "?"
+        agent_staff = "?"
+        if p.jwt:
+            try:
+                client = HubClient(hub_url=hub_url, profile=p)
+                info = client.get_agent_profile(p.agent_id)
+                agent_tier = str(info.get("tier", "?"))
+                agent_staff = "yes" if info.get("is_staff") else "no"
+            except Exception:
+                logger.debug("Failed to fetch profile for %s", p.name, exc_info=True)
+
+        rows.append((p.name, p.role, pid_str, status, agent_tier, agent_staff))
+
+    _print_aligned_columns(
+        ("Name", "Role", "PID", "Status", "Tier", "Staff"),
+        rows,
+    )
+
+
+@_agents_app.command("info")
+def agents_info(
+    name: str = typer.Option(..., "--name", prompt="Agent profile name", help="Name of the agent"),
+):
+    """Show detailed profile information for an agent (fetched from hub)."""
+    profile = load_profile(name)
+    if not profile:
+        console.print(f"[bold red]✗[/bold red] Profile '{name}' not found.")
+        raise typer.Exit(code=1)
+
+    if not profile.jwt:
+        console.print(f"[bold red]✗[/bold red] Profile '{name}' has no JWT — not registered with the hub.")
+        raise typer.Exit(code=1)
+
+    config = load_config()
+    client = HubClient(hub_url=config["hub_url"], profile=profile)
+
+    try:
+        info = client.get_agent_profile(profile.agent_id)
+    except Exception as err:
+        _print_error(err, "Failed to fetch agent profile from hub")
+        raise typer.Exit(code=1) from err
+
+    from datetime import datetime
+
+    registered_raw = info.get("registered_at", "")
+    registered_display = registered_raw
+    if isinstance(registered_raw, str) and registered_raw:
+        try:
+            dt = datetime.fromisoformat(registered_raw.replace("Z", "+00:00"))
+            registered_display = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        except (ValueError, TypeError):
+            pass
+
+    last_seen_raw = info.get("last_seen")
+    last_seen_display = str(last_seen_raw) if last_seen_raw else "never"
+    if isinstance(last_seen_raw, str) and last_seen_raw:
+        try:
+            dt = datetime.fromisoformat(last_seen_raw.replace("Z", "+00:00"))
+            last_seen_display = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        except (ValueError, TypeError):
+            pass
+
+    lines = [
+        f"Agent ID    {info.get('id', profile.agent_id)}",
+        f"Name        {info.get('name', name)}",
+        f"Role        {info.get('role', 'unknown')}",
+        f"Tier        {info.get('tier', '?')}",
+        f"Staff       {'yes' if info.get('is_staff') else 'no'}",
+        f"Status      {info.get('status', 'unknown')}",
+        f"Registered  {registered_display}",
+        f"Last Seen   {last_seen_display}",
+    ]
+
+    panel = Panel("\n".join(lines), title=f"[bold]{name}[/bold]", border_style="cyan")
+    console.print(panel)
 
 
 # ------------------------------------------------------------------
@@ -1502,6 +1625,83 @@ def admin_main(
 ):
     """Admin commands (requires tier 3 staff agent)."""
     _apply_no_color(no_color)
+
+
+@_admin_app.command("users")
+def admin_users(
+    action: str = typer.Argument(..., help="list | ban | unban"),
+    username: str = typer.Option(None, "--username", "-u", help="KidEconomy username (required for ban/unban)"),
+    reason: str = typer.Option(None, "--reason", help="Ban reason"),
+    force: bool = typer.Option(False, "--force", help="Skip confirmation prompt for ban"),
+):
+    """Manage users: list, ban (disable account), unban (re-enable account)."""
+    client = require_auth()
+
+    if action == "list":
+        try:
+            users = client.admin_list_users()
+        except Exception as err:
+            console.print(f"[bold red]✗[/bold red] Could not list users: {err}")
+            raise typer.Exit(code=1) from err
+        if not users:
+            console.print("[dim]No users found.[/dim]")
+            return
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("ID")
+        table.add_column("Username")
+        table.add_column("Tier")
+        table.add_column("Staff")
+        table.add_column("Active")
+        table.add_column("Agents")
+        for u in users:
+            staff = "[green]yes[/green]" if u.get("is_staff") else "[dim]no[/dim]"
+            active = "[green]yes[/green]" if u.get("is_active") else "[red]no[/red]"
+            table.add_row(
+                str(u["id"]),
+                u["ke_username"],
+                str(u["tier"]),
+                staff,
+                active,
+                str(u.get("agent_count", 0)),
+            )
+        console.print(table)
+
+    elif action == "ban":
+        if not username:
+            raise typer.BadParameter("--username is required for ban")
+        if not force:
+            confirm = typer.confirm(
+                f"Ban user '{username}'? This disables the account and deactivates all their agents.",
+                default=False,
+            )
+            if not confirm:
+                console.print("[dim]Cancelled.[/dim]")
+                raise typer.Exit()
+        try:
+            result = client.admin_ban_user(username, reason)
+        except Exception as err:
+            console.print(f"[bold red]✗[/bold red] Ban failed: {err}")
+            raise typer.Exit(code=1) from err
+        console.print(
+            f"[bold yellow]⚠[/bold yellow] Banned '{result['kideconomy_user_id']}' "
+            f"({result['agents_deactivated']} agents deactivated)."
+        )
+
+    elif action == "unban":
+        if not username:
+            raise typer.BadParameter("--username is required for unban")
+        try:
+            result = client.admin_unban_user(username)
+        except Exception as err:
+            console.print(f"[bold red]✗[/bold red] Unban failed: {err}")
+            raise typer.Exit(code=1) from err
+        console.print(
+            f"[bold green]✓[/bold green] Unbanned '{result['kideconomy_user_id']}' "
+            f"({result['agents_reactivated']} agents reactivated)."
+        )
+
+    else:
+        raise typer.BadParameter(f"Unknown action '{action}'. Use: list | ban | unban")
 
 
 @_admin_app.command("skills")

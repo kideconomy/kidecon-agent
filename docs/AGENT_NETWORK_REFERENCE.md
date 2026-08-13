@@ -114,11 +114,11 @@ flowchart TB
 | Tier gating | `kidecon-hub` | `services/gating.py`, `api/deps.py:36-41` | Live | `check_tool_access(agent, tool_name)`; `require_tier(N)` |
 | A2A message broker (poll model) | `kidecon-hub` | `api/broker.py:35-97` | Live | `send` / `poll` / `respond` — **HTTP polling, not WebSocket** |
 | Skill directory | `kidecon-hub` | `api/skills.py:19-55` | Live | `discover` + `/{id}`; approved-only |
-| Admin (tier 3) | `kidecon-hub` | `api/admin.py` | Live | Skill approval, tier bumps, telemetry read |
+| Admin (tier 3) | `kidecon-hub` | `api/admin.py` | Live | Skill approval, tier bumps, telemetry read, agent list/delete, user list/ban/unban |
 | Telemetry model | `kidecon-hub` | `models.py:73-81` | Live, **domains_accessed unused** | `tool_called` written on every MCP call; `domains_accessed` JSON field exists but never populated |
 | `Agent` model | `kidecon-hub` | `models.py:28-41` | Live | id, name, tier, jwt_secret, status, last_seen |
 | `Message` model | `kidecon-hub` | `models.py:57-70` | Live | from/to agent, type, payload, reply_to, status |
-| Click CLI lifecycle | `kidecon-agent` | `cli/kidecon.py` | Live, stubs | `setup/start/stop/status/update/key/tier/skills` |
+| Click CLI lifecycle | `kidecon-agent` | `cli/kidecon.py` | Live, stubs | `setup/start/stop/status/update/key/tier/skills/admin` |
 | Hub HTTP client | `kidecon-agent` | `wrappers/hub_client.py` | Live | register, hub_call, poll, respond, send, discover, get_tier |
 | Local tools | `kidecon-agent` | `wrappers/tools.py` | Live, **weak path check** | `file_read`, `file_append_markdown`, `message_user` (stub: print) |
 | User-script sandbox | `kidecon-agent` | `wrappers/sandbox.py:27-54` | Live, **NOT a real sandbox** | `subprocess.run` + 60s timeout + first-run approval; no seccomp/AppArmor, no net-egress block |
@@ -362,6 +362,7 @@ Every scenario where the laptop cannot immediately service a turn must have a de
 | F9 | Intent-denied graceful degrade | `MESSAGE_CONTENT` not verified >100 servers | Guild free-text disabled; slash-only in guilds; DMs unaffected | Architectural: treat guilds as slash-only by policy |
 | F10 | Token-expired / hub-down | Bot token invalid OR hub unreachable | Ops alert (bot cannot start) or agent `doctor` reports hub down | Hub-down means all live turns fail; digest (F6) also fails |
 | F11 | JWT-expired re-register | Agent's hub JWT expires (default 1440 min, `config.py:12`) | Agent's poll/WS calls return 401; `doctor` detects; offers re-register | Stateless by design; agent re-runs `register()` to rotate |
+| F12 | Hard 403 (account/agent state) | KE account disabled (`ban_user`), agent deactivated, or registration ownership-mismatch | Hub returns 403 with a `detail` string; runtime surfaces it (what/why/next), marks offline, exits non-zero — no retry | Hard state; auto re-register impossible (KE password never persisted); fail-open on KE outage means 403 = genuine block, not a flap |
 
 #### 3.8.2 Per-strategy detail — configuration, failure scenarios, trade-offs
 
@@ -415,6 +416,9 @@ Every scenario where the laptop cannot immediately service a turn must have a de
 **F11 — JWT-expired re-register.**
 - *Config:* hub JWT expires at `JWT_EXPIRE_MINUTES` (default 1440 = 24h, `config.py:12`). On expiry, `get_current_agent` 401s. The agent must re-run `register()` (which rotates the secret). `doctor` should detect 401s and offer re-register.
 
+**F12 — Hard 403 (account/agent state).**
+- *Config:* the hub re-verifies the agent's KidEconomy user on every authenticated request (TTL-cached ~300s) and returns **403** — distinct from the 401 of F11 — when the KE account has been disabled (`ban_user`), the agent row is deactivated, or registration tries to re-link an agent already owned by a different KE user. The hub distinguishes these only by the JSON `detail` string. The runtime loop surfaces the real `detail` in a three-part message (what / why / next), marks itself offline if reachable, and exits non-zero. It does **not** retry or auto-re-register: the KE password is never persisted, so recovery requires an admin un-ban (KE-disabled) or the user re-running `kidecon setup` / `kidecon agents create` with the correct account. Transient KE outages are fail-open at the hub, so a 403 here is always a genuine block, never a flap.
+
 #### 3.8.3 Default routing policy (the recommended combination)
 
 ```
@@ -431,6 +435,7 @@ on Discord turn arrival:
   morning digest (scheduled, no live turn): F6
   on connection drop mid-turn:             F7 (buffer) -> F3 (deliver on reconnect) or F2 (>5min)
   on 401 from hub:                         F11 (re-register)
+  on 403 from hub:                         F12 (surface reason, mark offline, exit — no retry)
   on hub unreachable:                      F10 (doctor surfaces)
 ```
 
@@ -493,6 +498,7 @@ Under the **current polling transport**, several fallbacks behave differently:
 | Discord account not linked | Bot Master has no `discord_user_id` | `doctor` detects → deep-links to kidecon profile page → re-run linkage flow. |
 | Laptop asleep at 6am | No live turns | F1/F2/F3/F6 — designed for this exact case. |
 | Hub JWT expired | API calls 401 | `doctor` detects; offers "re-register" → `kidecon setup` re-issues JWT (F11). |
+| KE account disabled / agent deactivated | API calls 403 | Runtime surfaces the hub's reason and exits (F12). Not self-healable — admin must un-ban, or user re-runs `kidecon setup` with the correct account. |
 | Network egress blocked (corp firewall) | Poll/WS to hub fails; OpenRouter call fails | `doctor` tests hub + OpenRouter reachability; documents required firewall exceptions. |
 | NAT / home router drops long connection | Silent disconnect (only relevant if WS adopted) | Heartbeat + backoff (F7); user sees "reconnecting…" in `doctor`. |
 | Wrong OS architecture | Apple Silicon vs Intel, ARM Windows | Auto-detect arch; ship universal binaries; refuse to install on mismatched arch with a clear message. |
@@ -787,6 +793,7 @@ OS keyring has gaps: headless VPS often has no SecretService daemon; SSH-only bo
 | 15-min Discord interaction-token cliff | Medium | F4→F3 release-and-deliver-later (§3.8) |
 | Hub down → all live turns fail | High | `doctor` surfaces; F6 digest independent of laptop but not hub; hub HA is Phase 3+ ops concern |
 | Hub JWT expiry (24h default) surprises users | Low | `doctor` detects 401; auto re-register (F11) |
+| KE account banned / agent deactivated mid-run | Low | Hub returns 403; runtime surfaces reason + exits (F12). Fail-open on KE outage prevents false exits. |
 | `domains_accessed` never populated → privacy posture undeliverable | Medium | Wire agent→hub domains push (Phase 4) |
 
 ---

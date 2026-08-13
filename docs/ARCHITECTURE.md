@@ -57,7 +57,7 @@ flowchart TD
 
 1. **Install** (`install.sh`): creates `env/`, installs deps, copies `kidecon.yaml` to `~/.config/kidecon/`, prompts for OpenRouter key -> keyring, runs `kidecon setup`.
 2. **Register** (`kidecon setup`): `HubClient.register()` POSTs to `/api/register_agent`, stores JWT + agent_id in keyring.
-3. **Run** (`kidecon start`): enters the Hermes runtime loop — pulls MCP manifest from hub, long-polls for messages, routes each message through ingress safety → LLM (with dynamic tier selection) → egress safety → respond. Handles SIGINT/SIGTERM (mark offline), 401 (prompt re-register), and network dropouts (exponential backoff).
+3. **Run** (`kidecon start`): enters the Hermes runtime loop — pulls MCP manifest from hub, long-polls for messages, routes each message through ingress safety → LLM (with dynamic tier selection) → egress safety → respond. Handles SIGINT/SIGTERM (mark offline), 401 (prompt re-register), 403 (KE account disabled / agent deactivated / ownership mismatch — surface the hub's reason and exit non-zero, no retry), and network dropouts (exponential backoff).
 4. **Tool call**: agent invokes an allowed tool — local (`wrappers/tools.py`) or hub (`HubClient.hub_call()` via `/api/mcp/call`).
 5. **User script**: `UserScriptSandbox.execute()` runs a script from `~/kidecon/user_scripts/`; first run requires approval (recorded in `~/kidecon/.approved_scripts`); 60s timeout enforced.
 6. **Messages**: `HubClient.poll_messages()` → `/api/messages/poll`; respond via `/api/messages/{id}/respond`; send via `/api/messages/send`.
