@@ -10,10 +10,58 @@ class SkillLoader:
         self.client = client
         self._index: list[dict] = []
         self._cache: dict[str, dict] = {}
+        self._agent_tier: int | None = None
+
+    def _resolve_tier(self) -> int:
+        """Best-effort resolve the agent's hub tier for defense-in-depth filtering.
+
+        The hub already filters discovery/fetch by tier and block state, so
+        this client-side check is belt-and-suspenders: it guards against a
+        hub bug or a stale cache returning a skill the agent's tier cannot
+        access. A failed tier lookup defaults to tier 0 (public-only) so we
+        never silently retain a restricted skill when we can't confirm
+        access.
+        """
+        if self._agent_tier is not None:
+            return self._agent_tier
+        tier = 0
+        try:
+            raw = self.client.get_tier()
+            tier = raw if isinstance(raw, int) else int(raw)
+        except Exception:  # noqa: BLE001 - tier lookup is best-effort; fall back to tier 0
+            logger.debug("Could not resolve agent tier — defaulting to tier 0 for skill filtering")
+            tier = 0
+        self._agent_tier = tier
+        return tier
+
+    def _accessible(self, skill: dict) -> bool:
+        """Defense-in-depth: drop out-of-tier or blocked skills the hub may return."""
+        if skill.get("blocked"):
+            return False
+        min_tier = skill.get("min_hub_tier", 0)
+        try:
+            if int(min_tier) > self._resolve_tier():
+                return False
+        except (TypeError, ValueError):
+            return False
+        return True
 
     def refresh(self) -> None:
-        """Fetch all live skills from hub. Called on boot and periodically."""
-        self._index = self.client.discover_skills("")
+        """Fetch all live skills from hub. Called on boot and periodically.
+
+        The hub filters by tier and block state; we re-filter client-side as
+        belt-and-suspenders so a skill the agent's tier cannot access is never
+        retained in the index. The cached tier is invalidated each refresh so
+        a mid-session promotion/demotion is picked up rather than filtering
+        against a stale tier.
+        """
+        self._agent_tier = None
+        raw = self.client.discover_skills("")
+        before = len(raw)
+        self._index = [s for s in raw if self._accessible(s)]
+        dropped = before - len(self._index)
+        if dropped:
+            logger.warning("Dropped %d skill(s) blocked by client-side tier/block filter", dropped)
         logger.info("Loaded %d skills from hub", len(self._index))
 
     def get_index_summary(self) -> str:
@@ -26,12 +74,32 @@ class SkillLoader:
         return "\n".join(lines)
 
     def get_skill_instructions(self, skill_id: str) -> str | None:
-        """Fetch full skill definition (lazy). Returns the instructions field or None."""
+        """Fetch full skill definition (lazy). Returns the instructions field or None.
+
+        Defense-in-depth: if the hub returns a skill whose tier/block state is
+        inaccessible to this agent, the instructions are dropped and not cached.
+        A cached entry is also re-checked on every read so a mid-session demotion
+        (tier 3 -> 1) cannot serve previously-fetched staff instructions from the
+        cache after the agent's tier has dropped.
+        """
         if skill_id not in self._cache:
             definition = self.client.get_skill(skill_id)
             if definition is None:
                 return None
+            if not self._accessible(definition):
+                logger.warning(
+                    "Dropped instructions for skill %s — blocked by client-side tier/block filter",
+                    skill_id,
+                )
+                return None
             self._cache[skill_id] = definition
+        elif not self._accessible(self._cache[skill_id]):
+            logger.warning(
+                "Evicted cached instructions for skill %s — agent tier no longer permits access",
+                skill_id,
+            )
+            del self._cache[skill_id]
+            return None
         return self._cache[skill_id].get("instructions")
 
     def find_skill(self, text: str) -> dict | None:
@@ -57,6 +125,8 @@ class SkillLoader:
             best = results[0]
             score = best.get("score", 0)
             if isinstance(score, (int, float)) and score >= threshold:
+                if not self._accessible(best):
+                    return None
                 logger.info("Vector match: '%s' (score=%.3f)", best["name"], score)
                 return best
         except Exception:

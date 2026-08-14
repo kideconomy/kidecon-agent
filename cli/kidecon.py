@@ -1706,11 +1706,12 @@ def admin_users(
 
 @_admin_app.command("skills")
 def admin_skills(
-    action: str = typer.Argument(..., help="pending | approve | reject | embed"),
-    skill_id: str = typer.Option(None, "--id", help="Skill ID (required for approve/reject)"),
+    action: str = typer.Argument(..., help="pending | approve | reject | embed | set-tier | block | unblock"),
+    skill_id: str = typer.Option(None, "--id", help="Skill ID (required for approve/reject/set-tier/block/unblock)"),
     reason: str = typer.Option(None, "--reason", help="Rejection reason (required for reject)"),
+    min_hub_tier: int = typer.Option(None, "--tier", help="Min hub tier 0-3 (required for set-tier)"),
 ):
-    """Manage skills: pending (list), approve, reject, embed (generate embeddings for vector search)."""
+    """Manage skills: pending (list), approve, reject, embed, set-tier, block, unblock."""
     client = require_auth()
 
     if action == "pending":
@@ -1728,8 +1729,14 @@ def admin_skills(
         table.add_column("Version")
         table.add_column("Status")
         table.add_column("Category")
+        table.add_column("MinTier")
+        table.add_column("Blocked")
         for s in skills:
-            table.add_row(s["id"], s["name"], s["version"], s["approval_status"], s["category"])
+            blocked = "[red]yes[/red]" if s.get("blocked") else "[dim]no[/dim]"
+            table.add_row(
+                s["id"], s["name"], s["version"], s["approval_status"], s["category"],
+                str(s.get("min_hub_tier", 0)), blocked,
+            )
         console.print(table)
 
     elif action == "approve":
@@ -1754,6 +1761,46 @@ def admin_skills(
             raise typer.Exit(code=1) from err
         console.print(f"[bold yellow]⚠[/bold yellow] Skill {skill_id} rejected: {result['reason']}")
 
+    elif action == "set-tier":
+        if not skill_id:
+            raise typer.BadParameter("--id is required for set-tier")
+        if min_hub_tier is None:
+            raise typer.BadParameter("--tier is required for set-tier")
+        if min_hub_tier < 0 or min_hub_tier > 3:
+            raise typer.BadParameter("--tier must be between 0 and 3")
+        try:
+            result = client.admin_set_skill_tier(skill_id, min_hub_tier)
+        except Exception as err:
+            console.print(f"[bold red]✗[/bold red] Set-tier failed: {err}")
+            raise typer.Exit(code=1) from err
+        if result["min_hub_tier"] == 3:
+            label = "staff-only"
+        elif result["min_hub_tier"] == 0:
+            label = "public"
+        else:
+            label = f"tier {result['min_hub_tier']}"
+        console.print(f"[bold green]✓[/bold green] Skill {skill_id} min_hub_tier set to {result['min_hub_tier']} ({label}).")
+
+    elif action == "block":
+        if not skill_id:
+            raise typer.BadParameter("--id is required for block")
+        try:
+            result = client.admin_block_skill(skill_id)
+        except Exception as err:
+            console.print(f"[bold red]✗[/bold red] Block failed: {err}")
+            raise typer.Exit(code=1) from err
+        console.print(f"[bold red]⛔[/bold red] Skill {skill_id} blocked — no longer delivered to anyone.")
+
+    elif action == "unblock":
+        if not skill_id:
+            raise typer.BadParameter("--id is required for unblock")
+        try:
+            result = client.admin_unblock_skill(skill_id)
+        except Exception as err:
+            console.print(f"[bold red]✗[/bold red] Unblock failed: {err}")
+            raise typer.Exit(code=1) from err
+        console.print(f"[bold green]✓[/bold green] Skill {skill_id} unblocked — delivery resumed (subject to tier gating).")
+
     elif action == "embed":
         console.print("[dim]Generating embeddings for all live skills...[/dim]")
         try:
@@ -1773,7 +1820,7 @@ def admin_skills(
 
     else:
         raise typer.BadParameter(
-            f"Unknown action '{action}'. Use: pending | approve | reject | embed"
+            f"Unknown action '{action}'. Use: pending | approve | reject | embed | set-tier | block | unblock"
         )
 
 

@@ -295,6 +295,31 @@ class HubClient:
         response.raise_for_status()
         return response.json()
 
+    def admin_set_skill_tier(self, skill_id: str, min_hub_tier: int) -> dict:
+        response = httpx.post(
+            f"{self.hub_url}/api/admin/skills/{skill_id}/set_tier",
+            json={"min_hub_tier": min_hub_tier},
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def admin_block_skill(self, skill_id: str) -> dict:
+        response = httpx.post(
+            f"{self.hub_url}/api/admin/skills/{skill_id}/block",
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def admin_unblock_skill(self, skill_id: str) -> dict:
+        response = httpx.post(
+            f"{self.hub_url}/api/admin/skills/{skill_id}/unblock",
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
     def admin_list_agents(self) -> list[dict]:
         response = httpx.get(
             f"{self.hub_url}/api/admin/agents",

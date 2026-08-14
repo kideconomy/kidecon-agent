@@ -123,3 +123,173 @@ def test_find_skill_handles_empty_index():
     loader = SkillLoader(client)
     result = loader.find_skill("clickup-ticket")
     assert result is None
+
+
+# ------------------------------------------------------------------
+# Defense-in-depth: client-side tier/block filtering
+# ------------------------------------------------------------------
+def _tiered_client(tier: int):
+    client = MagicMock()
+    client.get_tier.return_value = tier
+    client.discover_skills.return_value = [
+        {
+            "id": "sk-public",
+            "name": "public-skill",
+            "category": "tool",
+            "description": "Anyone can use this",
+            "version": "1.0.0",
+            "min_hub_tier": 0,
+            "blocked": False,
+        },
+        {
+            "id": "sk-staff",
+            "name": "staff-skill",
+            "category": "tool",
+            "description": "Staff only",
+            "version": "1.0.0",
+            "min_hub_tier": 3,
+            "blocked": False,
+        },
+        {
+            "id": "sk-danger",
+            "name": "danger-skill",
+            "category": "tool",
+            "description": "Quarantined",
+            "version": "1.0.0",
+            "min_hub_tier": 0,
+            "blocked": True,
+        },
+    ]
+    return client
+
+
+def test_refresh_drops_out_of_tier_and_blocked_for_tier1():
+    client = _tiered_client(1)
+    loader = SkillLoader(client)
+    loader.refresh()
+    ids = {s["id"] for s in loader._index}
+    assert ids == {"sk-public"}
+
+
+def test_refresh_keeps_staff_skill_for_tier3():
+    client = _tiered_client(3)
+    loader = SkillLoader(client)
+    loader.refresh()
+    ids = {s["id"] for s in loader._index}
+    assert "sk-public" in ids
+    assert "sk-staff" in ids
+    # blocked is dropped even for tier 3
+    assert "sk-danger" not in ids
+
+
+def test_get_skill_instructions_drops_out_of_tier():
+    client = _tiered_client(1)
+    client.get_skill.return_value = {
+        "id": "sk-staff",
+        "name": "staff-skill",
+        "instructions": "secret staff procedure",
+        "min_hub_tier": 3,
+        "blocked": False,
+    }
+    loader = SkillLoader(client)
+    loader._agent_tier = 1
+    assert loader.get_skill_instructions("sk-staff") is None
+
+
+def test_get_skill_instructions_drops_blocked():
+    client = _tiered_client(3)
+    client.get_skill.return_value = {
+        "id": "sk-danger",
+        "name": "danger-skill",
+        "instructions": "dangerous procedure",
+        "min_hub_tier": 0,
+        "blocked": True,
+    }
+    loader = SkillLoader(client)
+    loader._agent_tier = 3
+    assert loader.get_skill_instructions("sk-danger") is None
+
+
+def test_get_skill_instructions_keeps_accessible():
+    client = _tiered_client(1)
+    client.get_skill.return_value = {
+        "id": "sk-public",
+        "name": "public-skill",
+        "instructions": "public procedure",
+        "min_hub_tier": 0,
+        "blocked": False,
+    }
+    loader = SkillLoader(client)
+    loader._agent_tier = 1
+    assert loader.get_skill_instructions("sk-public") == "public procedure"
+
+
+def test_refresh_defaults_to_tier0_on_tier_lookup_failure():
+    client = _tiered_client(1)
+    client.get_tier.side_effect = RuntimeError("hub down")
+    loader = SkillLoader(client)
+    loader.refresh()
+    # tier 0 keeps only public, drops staff + blocked
+    ids = {s["id"] for s in loader._index}
+    assert ids == {"sk-public"}
+
+
+def test_vector_find_drops_inaccessible_match():
+    client = _tiered_client(1)
+    client.discover_skills.return_value = [
+        {
+            "id": "sk-staff",
+            "name": "staff-skill",
+            "category": "tool",
+            "description": "Staff only",
+            "version": "1.0.0",
+            "min_hub_tier": 3,
+            "blocked": False,
+            "score": 0.9,
+        },
+    ]
+    loader = SkillLoader(client)
+    loader._agent_tier = 1
+    assert loader.find_skill("I need the staff-skill") is None
+
+
+def test_refresh_re_resolves_tier_after_promotion():
+    """A mid-session promotion (tier 1 -> 3) must take effect on the next refresh.
+
+    refresh() invalidates the cached tier so staff skills the hub now returns
+    are retained, not dropped against a stale tier-1 cache.
+    """
+    client = _tiered_client(1)
+    loader = SkillLoader(client)
+    loader._agent_tier = 1
+    loader.refresh()
+    assert "sk-staff" not in {s["id"] for s in loader._index}
+
+    # Promote: hub now reports tier 3 and returns the staff skill as accessible.
+    client.get_tier.return_value = 3
+    loader.refresh()
+    ids = {s["id"] for s in loader._index}
+    assert "sk-staff" in ids
+    assert "sk-public" in ids
+    assert "sk-danger" not in ids  # blocked still dropped even for tier 3
+
+
+def test_get_skill_instructions_evicts_cache_on_demotion():
+    """A cached staff skill must not be served after the agent is demoted to tier 1."""
+    client = _tiered_client(3)
+    client.get_skill.return_value = {
+        "id": "sk-staff",
+        "name": "staff-skill",
+        "instructions": "secret staff procedure",
+        "min_hub_tier": 3,
+        "blocked": False,
+    }
+    loader = SkillLoader(client)
+    loader._agent_tier = 3
+    # First fetch caches the staff instructions while tier 3.
+    assert loader.get_skill_instructions("sk-staff") == "secret staff procedure"
+
+    # Demote: the cached entry must be re-checked and evicted.
+    loader._agent_tier = 1
+    assert loader.get_skill_instructions("sk-staff") is None
+    assert "sk-staff" not in loader._cache
