@@ -1,0 +1,20 @@
+name: legal-doc-compare
+version: 0.1.0
+category: documentation
+description: >-
+  Compares an outside legal document (pasted text or inbox file) against the
+  local mirror of the legal protocol docs corpus, with Lexor providing
+  candidate matching and guidance. Produces a gap-analysis report with corpus
+  citations. Staff-only; read-only; never modifies the corpus.
+entrypoint: handler.py
+permissions:
+  tools:
+    - file_read
+    - file_append_markdown
+  network: true
+config:
+  docs:
+    default: {}
+    description: >-
+      Mirror settings live under the top-level `docs` block of kidecon.yaml
+      (enabled, repo_url, branch). See wrappers/docs_mirror.py.

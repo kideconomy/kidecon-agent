@@ -77,6 +77,16 @@ KidEconomy Agent is the user-facing, public repo. A thin CLI wrapper and Python 
 | 6e | `docs/checkpoints/` — empty dir for future milestones | Low |
 | 6f | `README.md` — public-facing readme with install instructions | High |
 
+### Phase 7 — Security Hardening & Corpus Access
+**Category:** Security, Skills
+
+| # | Item | Priority |
+|---|------|----------|
+| 7a | **Self-healing integrity** — sign/hash core files (`wrappers/`, `cli/`, `pyproject.toml`) at install; periodic integrity check; on mismatch, restore via `git checkout -- .` and flag the hub for tampering. Obfuscated/anti-tamper so it is not trivially discoverable or disabled. | Critical |
+| 7b | **Docs corpus mirror** — a local `git checkout` of the protocol-docs repo into `<workspace>/legal-docs/`, gated by a scoped read-only PAT (keyring `api_key_github-docs`); staff-only read. | High |
+| 7c | **Staff file grab/dump** — staff-tier local tool to copy corpus files out of the mirror into arbitrary workspace locations (and read them). | High |
+| 7d | **Local corpus churn** — agent-side search/summarize over the mirrored corpus without round-tripping the hub or Lexor. | Medium |
+
 ---
 
 ## Design Decisions

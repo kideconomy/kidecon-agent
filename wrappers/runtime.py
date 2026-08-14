@@ -65,6 +65,14 @@ def _build_engine(client: "HubClient", config: dict, is_orchestrator: bool = Fal
     factory, safety, models, system_prompt, provider_name, max_price = _init_llm(config)
     cognition_config = dict(config.get("cognition", {}))
     normalization_config = dict(config.get("normalization", {}))
+
+    workspace_config = config.get("workspace_dir")
+    from wrappers import tools as tools_mod
+
+    if workspace_config:
+        tools_mod.set_workspace_dir(workspace_config)
+    logger.info("Workspace dir: %s", tools_mod.workspace_dir())
+
     memory_dir = config.get("memory_dir")
     memory = MemoryStore(memory_dir=memory_dir) if memory_dir else MemoryStore()
     sessions_dir = memory.dir / "sessions"
@@ -89,6 +97,24 @@ def _build_engine(client: "HubClient", config: dict, is_orchestrator: bool = Fal
     else:
         logger.info("Lexor client disabled — agent runs without Lexor capability")
 
+    docs_mirror = None
+    try:
+        from wrappers.docs_mirror import build_docs_mirror
+
+        docs_mirror = build_docs_mirror(config)
+    except Exception:
+        logger.exception("Docs mirror build failed — continuing without the local corpus")
+    if docs_mirror is not None:
+        logger.info("Docs mirror enabled (branch=%s)", docs_mirror.branch)
+        # Best-effort boot sync: only refresh when a clone already exists so a
+        # first-use clone never delays startup. Failures are non-fatal; the
+        # comparison path re-syncs on demand and degrades to the local copy.
+        if docs_mirror.exists():
+            with contextlib.suppress(Exception):
+                docs_mirror.sync(agent_hub_tier)
+    else:
+        logger.info("Docs mirror disabled — agent runs without the local legal corpus")
+
     return CognitiveEngine(
         factory=factory,
         safety=safety,
@@ -106,6 +132,7 @@ def _build_engine(client: "HubClient", config: dict, is_orchestrator: bool = Fal
         agent_id=client.agent_id,
         is_orchestrator=is_orchestrator,
         lexor_client=lexor_client,
+        docs_mirror=docs_mirror,
     )
 
 

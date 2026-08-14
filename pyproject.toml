@@ -91,6 +91,7 @@ force-single-line = true
 "wrappers/tools.py" = [
     "TRY003", # long exception messages are intentional guidance
     "EM102",  # f-string literal in PermissionError
+    "PLW0603",# _workspace_dir is an intentional module-level setter/getter singleton
 ]
 "wrappers/runtime.py" = [
     "PLC0415",# lazy imports (keyring, KEYRING_SERVICE) inside run_forever to avoid circular imports
@@ -139,6 +140,19 @@ force-single-line = true
     "PLR0913", # LexorClient.__init__ takes config deps by design
     "C901",    # call() complexity is inherent to exhaustive error mapping
     "SLF001",  # build_lexor_client probes _read_jwt to validate provisioning
+    "TRY003",  # transparent error messages are long by design (§4.3)
+    "EM101",   # string literal in transparent message is acceptable
+    "EM102",   # f-string literal in transparent message is acceptable
+    "E501",    # transparent messages can be long
+]
+"wrappers/docs_mirror.py" = [
+    "PLC0415", # lazy import of keyring avoids import-time backend requirement
+    "PLR0913", # DocsMirror.__init__ takes config deps by design
+    "PLR0911", # sync() has multiple return paths for each block/error state
+    "C901",    # sync() complexity is inherent to exhaustive error mapping
+    "S603",    # subprocess git is the module's purpose; argv is fixed + validated
+    "S607",    # partial executable path 'git' is intentional
+    "SLF001",  # build_docs_mirror probes _read_token to validate provisioning
     "TRY003",  # transparent error messages are long by design (§4.3)
     "EM101",   # string literal in transparent message is acceptable
     "EM102",   # f-string literal in transparent message is acceptable

@@ -4,6 +4,7 @@ import contextlib
 import logging
 from dataclasses import dataclass
 from dataclasses import field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from shared.llm_clients.tiers import TierRouter
@@ -12,6 +13,7 @@ from wrappers.safety_firewall import EGRESS_CANNED
 from wrappers.safety_firewall import INGRESS_CANNED
 
 if TYPE_CHECKING:
+    from wrappers.docs_mirror import DocsMirror
     from wrappers.hub_client import HubClient
     from wrappers.lexor_client import LexorClient
     from wrappers.memory import MemoryStore
@@ -269,6 +271,49 @@ def _compact_str(obj) -> str:
         return str(obj)
 
 
+def _trace_touches_docs(trace: list[dict], mirror_dir=None) -> bool:
+    """True when a turn's trace read or synced the local docs mirror.
+
+    Docs-bearing turns must run egress even on non-Discord sources: corpus
+    content is sensitive legal material regardless of the delivery path.
+    Detection resolves each read path against the workspace (following
+    symlinks) and compares against the mirror directory, so a link pointing
+    into the mirror still triggers egress.
+    """
+    from wrappers import tools
+    from wrappers.docs_mirror import DOCS_MIRROR_DIRNAME
+
+    base = tools.workspace_dir()
+    mirror = Path(mirror_dir) if mirror_dir is not None else base / DOCS_MIRROR_DIRNAME
+    try:
+        mirror_resolved = mirror.resolve()
+    except OSError:
+        mirror_resolved = mirror
+
+    def _under_mirror(raw: str) -> bool:
+        if not raw:
+            return False
+        try:
+            return (base / str(raw)).resolve().is_relative_to(mirror_resolved)
+        except OSError:
+            return False
+
+    for entry in trace:
+        if entry.get("action") != "local_tool":
+            continue
+        params = entry.get("params") or {}
+        name = params.get("name", "")
+        if name == "docs_sync":
+            return True
+        if name == "file_read" and _under_mirror(params.get("path", "")):
+            return True
+        if name == "text_diff" and (
+            _under_mirror(params.get("path_a", "")) or _under_mirror(params.get("path_b", ""))
+        ):
+            return True
+    return False
+
+
 _LEXOR_CACHE_SENTINEL = object()
 _LEXOR_INSTRUCTIONS_CACHE: object = _LEXOR_CACHE_SENTINEL
 
@@ -323,6 +368,7 @@ class CognitiveEngine:
         agent_id: str | None = None,
         is_orchestrator: bool = False,
         lexor_client: LexorClient | None = None,
+        docs_mirror: DocsMirror | None = None,
     ) -> None:
         self.factory = factory
         self.safety = safety
@@ -340,6 +386,7 @@ class CognitiveEngine:
         self.agent_id = agent_id
         self.is_orchestrator = is_orchestrator
         self.lexor_client = lexor_client
+        self.docs_mirror = docs_mirror
         self._ensure_persona()
 
     def _ensure_persona(self) -> None:
@@ -406,9 +453,18 @@ class CognitiveEngine:
         # An egress-blocked result is never learned into persona/memory.
         # Lexor-bearing turns run egress regardless of source: Lexor output is
         # sensitive legal corpus content and must not bypass the firewall on a
-        # non-Discord path (e.g. a2a).
+        # non-Discord path (e.g. a2a). The same applies to turns that touched
+        # the local docs mirror (docs_sync or file reads under legal-docs/).
         used_lexor = any(t.get("action") == "lexor_call" for t in trace)
-        egress_passed, final_result = self._check_egress(source, result, msg_id, used_lexor=used_lexor)
+        mirror_dir = self.docs_mirror.dir if self.docs_mirror is not None else None
+        used_docs = _trace_touches_docs(trace, mirror_dir=mirror_dir)
+        egress_passed, final_result = self._check_egress(
+            source,
+            result,
+            msg_id,
+            used_lexor=used_lexor,
+            used_docs=used_docs,
+        )
 
         self._append_session(source, context, text, final_result, tier, msg_id)
 
@@ -437,14 +493,23 @@ class CognitiveEngine:
             return not self._is_fast(tier)
         return bool(self.cognition.get("reflect_on_daily", False))
 
-    def _check_egress(self, source: str, result: str, msg_id: str, *, used_lexor: bool = False) -> tuple[bool, str]:
+    def _check_egress(
+        self,
+        source: str,
+        result: str,
+        msg_id: str,
+        *,
+        used_lexor: bool = False,
+        used_docs: bool = False,
+    ) -> tuple[bool, str]:
         """Run egress safety. Returns (passed, final_result).
 
         Runs for Discord sources, and additionally for any turn that used a
-        ``lexor_call`` step (Lexor output is sensitive legal corpus content and
-        must not bypass the firewall on a non-Discord path).
+        ``lexor_call`` step or touched the local docs mirror (Lexor output and
+        corpus documents are sensitive legal content and must not bypass the
+        firewall on a non-Discord path).
         """
-        if source not in ("discord", "discord_dm") and not used_lexor:
+        if source not in ("discord", "discord_dm") and not used_lexor and not used_docs:
             return True, result
         safe, reason = self.safety.check_egress(result)
         if not safe:
@@ -749,17 +814,101 @@ class CognitiveEngine:
         )
         return f"Working on it — delegated to {worker['profile'].name}. I'll get back to you shortly."
 
-    @staticmethod
-    def _run_local_tool(params: dict) -> str:
+    def _run_local_tool(self, params: dict) -> str:
         from wrappers import tools
 
         name = params.get("name", "")
         if name == "file_read":
-            return tools.file_read(params.get("path", ""))
+            path = params.get("path", "")
+            blocked = self._docs_read_block(path)
+            if blocked:
+                return blocked
+            return tools.file_read(path)
         if name == "file_append_markdown":
             tools.file_append_markdown(params.get("path", ""), params.get("content", ""))
             return "appended"
+        if name == "text_diff":
+            for key in ("path_a", "path_b"):
+                blocked = self._docs_read_block(params.get(key, ""))
+                if blocked:
+                    return blocked
+            return tools.text_diff(params.get("path_a", ""), params.get("path_b", ""))
+        if name == "docs_sync":
+            return self._run_docs_sync()
         return f"unknown local tool: {name}"
+
+    def _docs_read_block(self, raw_path: str) -> str | None:
+        """Three-part block for non-staff reads of the staff-only docs mirror.
+
+        The mirror sync is tier-gated, but once the corpus exists on disk the
+        read path must be gated too: any ``file_read``/``text_diff`` target
+        that resolves under the mirror dir requires ``agent_hub_tier >=
+        min_hub_tier``. Resolution follows symlinks, so a workspace link
+        pointing into the mirror is caught. Returns None when the read is
+        allowed (or the path is not corpus-bearing).
+        """
+        from wrappers import tools
+        from wrappers.docs_mirror import DEFAULT_MIN_HUB_TIER
+        from wrappers.docs_mirror import DOCS_MIRROR_DIRNAME
+
+        mirror = getattr(self, "docs_mirror", None)
+        mirror_dir = mirror.dir if mirror is not None else tools.workspace_dir() / DOCS_MIRROR_DIRNAME
+        try:
+            target = (tools.workspace_dir() / str(raw_path)).resolve()
+            if not target.is_relative_to(mirror_dir.resolve()):
+                return None
+        except OSError:
+            return None
+        min_tier = mirror.min_hub_tier if mirror is not None else DEFAULT_MIN_HUB_TIER
+        if self.agent_hub_tier >= min_tier:
+            return None
+        return (
+            "Docs read was blocked. "
+            f"Reason: the legal docs mirror is staff-only (your tier: {self.agent_hub_tier}). "
+            "To proceed: ask your administrator to request staff access."
+        )
+
+    def _run_docs_sync(self) -> str:
+        """Fast-forward the local legal docs mirror.
+
+        Returns a transparent status string for the step output / trace. When
+        the mirror is disabled (not configured), this is a no-op message that
+        lets the turn continue without the local corpus.
+        """
+        mirror = getattr(self, "docs_mirror", None)
+        if mirror is None:
+            logger.debug("docs_sync step ignored — docs mirror not configured")
+            return (
+                "Docs sync was skipped. Reason: the legal docs mirror is not configured for this agent. "
+                "To proceed: ask your administrator to enable `docs` in kidecon.yaml and provision a "
+                "read-only credential via `kidecon key add --name github-docs --value <pat>`."
+            )
+        try:
+            result = mirror.sync(self.agent_hub_tier)
+        except Exception:
+            logger.exception("docs_sync step failed")
+            return (
+                "Docs sync failed. Reason: an unexpected error occurred while refreshing the mirror. "
+                "To proceed: the turn continues with whatever local docs already exist; retry later."
+            )
+        if not result.get("ok"):
+            return str(result.get("error", "Docs sync failed."))
+        parts = []
+        if result.get("cloned"):
+            parts.append("Docs mirror cloned for first use")
+        elif result.get("fresh"):
+            parts.append("Docs mirror is up to date")
+        else:
+            parts.append("Docs mirror is available (not refreshed)")
+        commit = result.get("commit")
+        if commit:
+            parts.append(f"commit {commit[:12]}")
+        parts.append(f"branch {mirror.branch}")
+        parts.append(f"files under {mirror.dir.name}/")
+        summary = "Docs sync ok — " + " ".join(parts) + "."
+        if result.get("warning"):
+            summary += f" {result['warning']}"
+        return summary
 
     def _run_lexor_call(self, tool: str, params: dict) -> str:
         """Dispatch a read-only Lexor tool call.

@@ -258,6 +258,7 @@ def init(
         },
         "update_channel": "stable",
         "hermes_version": "v1.2.0",
+        "workspace_dir": str(pathlib.Path.home() / "kidecon" / "workspace"),
     }
 
     config_path.write_text(_yaml.dump(defaults, default_flow_style=False))
@@ -283,6 +284,47 @@ def init(
 
     console.print()
     console.print("Next: [bold]kidecon agents create --name <name> --role orchestrator|worker|standalone[/bold]")
+
+
+# ------------------------------------------------------------------
+# workspace
+# ------------------------------------------------------------------
+@app.command()
+def workspace(
+    path: str = typer.Argument(
+        None, help="Working directory to set (e.g. ~/Documents/kidecon). Omit to show current.",
+    ),
+):
+    """Set or show the agent's working directory.
+
+    The working directory is where ``file_read``/``text_diff`` and the legal
+    docs mirror operate. Set it to a folder you control (Desktop, Documents,
+    etc.). Run ``kidecon doctor`` to confirm it took effect.
+    """
+    config_path = pathlib.Path.home() / ".config" / "kidecon" / "kidecon.yaml"
+
+    if path is None:
+        try:
+            config = load_config()
+        except FileNotFoundError:
+            console.print("[bold red]✗[/bold red] No config found. Run [bold]kidecon init[/bold] first.")
+            raise typer.Exit(code=1) from None
+        current = config.get("workspace_dir") or str(pathlib.Path.home() / "kidecon" / "workspace")
+        console.print(f"[bold cyan]Working directory:[/bold cyan] {current}")
+        return
+
+    try:
+        config = load_config()
+    except FileNotFoundError:
+        console.print("[bold red]✗[/bold red] No config found. Run [bold]kidecon init[/bold] first.")
+        raise typer.Exit(code=1) from None
+
+    resolved = pathlib.Path(path).expanduser().resolve()
+    config["workspace_dir"] = str(resolved)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    console.print(f"[bold green]✓[/bold green] Working directory set to: {resolved}")
+    console.print("[dim]Restart the agent for the change to take effect.[/dim]")
 
 
 # ------------------------------------------------------------------
@@ -1567,10 +1609,12 @@ def doctor():
         _add("Sandbox", "Approved scripts", "warn", "not yet created")
 
     workspace = Path.home() / "kidecon" / "workspace"
+    if "config" in dir() and config:
+        workspace = Path(config.get("workspace_dir") or workspace)
     ws_exists = workspace.exists()
     _add("Sandbox", "Workspace dir", "pass" if ws_exists else "fail",
          str(workspace),
-         "" if ws_exists else "Run `mkdir -p ~/kidecon/workspace` to create")
+         "" if ws_exists else "Run `kidecon workspace <path>` to set, then create the directory")
 
     counts = {"pass": 0, "fail": 0, "warn": 0}
     order = ["Environment", "Hub", "Keys", "LLM", "Sandbox"]
@@ -1709,7 +1753,7 @@ def admin_skills(
     action: str = typer.Argument(..., help="pending | approve | reject | embed | set-tier | block | unblock"),
     skill_id: str = typer.Option(None, "--id", help="Skill ID (required for approve/reject/set-tier/block/unblock)"),
     reason: str = typer.Option(None, "--reason", help="Rejection reason (required for reject)"),
-    min_hub_tier: int = typer.Option(None, "--tier", help="Min hub tier 0-3 (required for set-tier)"),
+    min_hub_tier: int = typer.Option(None, "--tier", help="Skill access tier (0=public or 3=staff-only; required for set-tier)"),
 ):
     """Manage skills: pending (list), approve, reject, embed, set-tier, block, unblock."""
     client = require_auth()
@@ -1766,19 +1810,14 @@ def admin_skills(
             raise typer.BadParameter("--id is required for set-tier")
         if min_hub_tier is None:
             raise typer.BadParameter("--tier is required for set-tier")
-        if min_hub_tier < 0 or min_hub_tier > 3:
-            raise typer.BadParameter("--tier must be between 0 and 3")
+        if min_hub_tier not in (0, 3):
+            raise typer.BadParameter("--tier must be 0 (public) or 3 (staff-only)")
         try:
             result = client.admin_set_skill_tier(skill_id, min_hub_tier)
         except Exception as err:
             console.print(f"[bold red]✗[/bold red] Set-tier failed: {err}")
             raise typer.Exit(code=1) from err
-        if result["min_hub_tier"] == 3:
-            label = "staff-only"
-        elif result["min_hub_tier"] == 0:
-            label = "public"
-        else:
-            label = f"tier {result['min_hub_tier']}"
+        label = "staff-only" if result["min_hub_tier"] == 3 else "public"
         console.print(f"[bold green]✓[/bold green] Skill {skill_id} min_hub_tier set to {result['min_hub_tier']} ({label}).")
 
     elif action == "block":

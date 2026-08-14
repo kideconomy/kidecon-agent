@@ -16,3 +16,9 @@ def isolate_home(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from wrappers import tools
+
+    # Reset any per-test workspace override so `workspace_dir()` falls back to
+    # the patched Path.home() (tmp_path) rather than leaking between tests.
+    monkeypatch.setattr(tools, "_workspace_dir", None)
