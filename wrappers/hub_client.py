@@ -151,7 +151,7 @@ class HubClient:
             raise RuntimeError(f"Tool '{tool_name}' rejected by hub: {detail}") from None
         if response.status_code == 401:
             raise RuntimeError(
-                "Not authorized — JWT may be expired. Re-run 'kidecon agents create'."
+                "Not authorized — JWT may be expired."
             ) from None
         response.raise_for_status()
         return response.json()
@@ -260,7 +260,7 @@ class HubClient:
             raise RuntimeError(f"Profile fetch rejected by hub: {detail}") from None
         if response.status_code == 401:
             raise RuntimeError(
-                "Not authorized — JWT may be expired. Re-run 'kidecon agents create'."
+                "Not authorized — JWT may be expired."
             ) from None
         response.raise_for_status()
         return response.json()

@@ -137,6 +137,35 @@ def _build_engine(client: "HubClient", config: dict, is_orchestrator: bool = Fal
     )
 
 
+def _renew_jwt(client: "HubClient") -> bool:
+    """Auto-renew the agent's JWT using the stored KidEconomy token.
+
+    Called when the hub returns 401 (expired JWT). Re-registers the SAME
+    agent_id to mint a fresh JWT, so the user never has to renew manually.
+    Returns True on success (``client.jwt`` is updated), False otherwise.
+    """
+    from wrappers.keys import KEY_KE_TOKEN
+    from wrappers.keys import get as keyring_get
+    from wrappers.profile_store import rotate_jwt
+
+    profile = getattr(client, "_profile", None)
+    if profile is None:
+        logger.warning("No profile attached to client — cannot auto-renew JWT")
+        return False
+    ke_token = keyring_get(KEY_KE_TOKEN)
+    if not ke_token:
+        logger.warning("JWT expired and no stored KidEconomy token — cannot auto-renew")
+        return False
+    try:
+        new_jwt = rotate_jwt(profile, client.hub_url, ke_token)
+    except Exception as err:
+        logger.warning("JWT auto-renew failed: %s", err)
+        return False
+    client.jwt = new_jwt
+    logger.info("JWT renewed automatically (agent=%s)", profile.name)
+    return True
+
+
 def run_forever(client: "HubClient", config: dict, is_orchestrator: bool = False) -> None:
     """Main Hermes runtime loop.
 
@@ -185,7 +214,13 @@ def run_forever(client: "HubClient", config: dict, is_orchestrator: bool = False
             backoff = 1.0
         except httpx.HTTPStatusError as e:
             if e.response.status_code == _HTTP_UNAUTHORIZED:
-                logger.fatal("JWT expired — run 'kidecon agents create' to re-register")
+                if _renew_jwt(client):
+                    logger.info("JWT renewed — resuming polling")
+                    continue
+                logger.fatal(
+                    "JWT expired and auto-renew failed — check that the KidEconomy "
+                    "credentials are valid (run 'kidecon authenticate')."
+                )
                 with contextlib.suppress(Exception):
                     client.update_status("offline")
                 sys.exit(1)

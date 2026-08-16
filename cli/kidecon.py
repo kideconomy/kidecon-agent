@@ -443,9 +443,8 @@ def start(
 
     try:
         tier = client.get_tier()
-    except Exception as err:
-        console.print("[bold red]✗[/bold red] JWT invalid or expired. Re-run '[bold]kidecon agents create[/bold]'.")
-        raise typer.Exit(code=1) from err
+    except Exception:
+        tier = "?"  # JWT may be expired — run_forever auto-renews on the first 401
 
     if background:
         _start_background(profile, config)
@@ -818,20 +817,17 @@ def agents_delete(
     name: str = typer.Option(..., "--name", prompt="Agent profile name to delete", help="Name of the profile to delete"),
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
 ):
-    """Delete a local agent profile."""
+    """Delete a local agent profile and de-register it from the hub."""
     profile = load_profile(name)
     if not profile:
         console.print(f"[bold red]✗[/bold red] Profile '{name}' not found.")
         raise typer.Exit(code=1)
 
     if not force:
-        if profile.jwt:
-            confirm = typer.confirm(
-                f"Delete profile '{name}'? This does NOT de-register the agent from the hub.",
-                default=False,
-            )
-        else:
-            confirm = typer.confirm(f"Delete profile '{name}'?", default=False)
+        confirm = typer.confirm(
+            f"Delete '{name}'? This de-registers the agent from the hub and removes the local profile.",
+            default=False,
+        )
         if not confirm:
             console.print("[dim]Cancelled.[/dim]")
             raise typer.Exit()
@@ -840,6 +836,26 @@ def agents_delete(
     if pid:
         console.print(f"[bold yellow]⚠[/bold yellow] Agent '{name}' is running (PID {pid}). Stop it first with [bold]kidecon agents stop --name {name}[/bold].")
         raise typer.Exit(code=1)
+
+    # De-register from the hub (best-effort) so the name is freed for re-use.
+    if profile.jwt:
+        config = load_config()
+        hub_url = config.get("hub_url", "")
+        if hub_url:
+            try:
+                import httpx
+
+                resp = httpx.delete(
+                    f"{hub_url.rstrip('/')}/api/agent/{profile.agent_id}",
+                    headers={"Authorization": f"Bearer {profile.jwt}"},
+                    timeout=10,
+                )
+                if resp.status_code in (200, 404):
+                    console.print(f"[dim]De-registered '{name}' from the hub.[/dim]")
+                else:
+                    console.print(f"[yellow]⚠ Hub de-registration returned HTTP {resp.status_code}.[/yellow]")
+            except Exception as err:
+                console.print(f"[yellow]⚠ Could not de-register from the hub: {err}[/yellow]")
 
     delete_profile(name)
     console.print(f"[bold green]✓[/bold green] Profile '{name}' deleted.")
@@ -1477,7 +1493,7 @@ def doctor():
                 _add("Hub", "JWT", "pass", f"valid (tier {tier_val})")
             except Exception as e:
                 _add("Hub", "JWT", "fail", str(e),
-                     "Re-register with `kidecon agents create`")
+                     "Auto-renews on next start (or run `kidecon authenticate` to refresh credentials)")
         else:
             _add("Hub", "JWT", "fail", "not set",
                  "Register with `kidecon agents create`")
