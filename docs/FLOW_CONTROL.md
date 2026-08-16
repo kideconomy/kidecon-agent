@@ -23,7 +23,7 @@ sequenceDiagram
 
     Install->>User: Prompt: Agent name?
     User-->>Install: agent-name
-    Install->>CLI: python cli/kidecon.py setup --name agent-name
+    Install->>CLI: python cli/kidecon.py agents create --name agent-name
     CLI->>CLI: Generate UUID if not in keyring (agent_id)
     CLI->>Hub: POST /api/register_agent {agent_id, name, platform: cli}
     Hub-->>CLI: 200 {jwt, agent_profile}
@@ -33,7 +33,7 @@ sequenceDiagram
 ```
 
 - `agent_id` is a UUID generated once and persisted in the OS keyring.
-- Registration is idempotent: re-running `setup` re-registers with the same agent_id.
+- Registration is idempotent: re-running `agents create` re-registers with the same agent_id.
 - OpenRouter key is optional during install; can be added later via `kidecon key add`.
 
 ---
@@ -210,7 +210,7 @@ flowchart TD
 flowchart TD
     CLI_Entry["python cli/kidecon.py"] --> CMD{Subcommand}
 
-    CMD -->|setup| Setup["HubClient.register(), store JWT in keyring"]
+    CMD -->|agents create| Setup["create_profile(), register + store JWT in keyring"]
     CMD -->|start| Start["Launch Hermes with kidecon.yaml (stub)"]
     CMD -->|stop| Stop["Graceful shutdown (stub)"]
     CMD -->|update| Update["Re-run install.sh with latest version (stub)"]
@@ -256,7 +256,7 @@ flowchart TD
 
 | Flow | Entry Point | Key Files |
 |------|------------|-----------|
-| Install & bootstrap | `bash install.sh` | `install.sh`, `cli/kidecon.py::setup` |
+| Install & bootstrap | `bash install.sh` | `install.sh`, `cli/kidecon.py::authenticate`, `::agents_create` |
 | Agent registration | `HubClient.register()` | `wrappers/hub_client.py`, OS keyring |
 | MCP tool call | `HubClient.hub_call()` | `wrappers/hub_client.py::_auth_headers()` |
 | Message poll | `HubClient.poll_messages()` | `wrappers/hub_client.py` |

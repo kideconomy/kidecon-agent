@@ -48,7 +48,7 @@ KidEconomy Agent is the user-facing, public repo. A thin CLI wrapper and Python 
 | # | Item | Priority |
 |---|------|----------|
 | 3a | `cli/__init__.py` | High |
-| 3b | `cli/kidecon.py` — Click CLI: setup, start, stop, status, update, key add, key list, tier, skills list, skills browse | Critical |
+| 3b | `cli/kidecon.py` — Click CLI: authenticate, agents, start, stop, status, update, key add, key list, tier, skills list, skills browse | Critical |
 
 ### Phase 4 — Install Script
 **Category:** Bootstrap
@@ -76,6 +76,7 @@ KidEconomy Agent is the user-facing, public repo. A thin CLI wrapper and Python 
 | 6d | `docs/ONBOARDING.md` — install + setup walkthrough | High |
 | 6e | `docs/checkpoints/` — empty dir for future milestones | Low |
 | 6f | `README.md` — public-facing readme with install instructions | High |
+| 6g | Document the workspace-dir resolution logic — `kidecon workspace` command (auto-creates dir, warns if non-empty, conditional restart note), `tools.workspace_dir()` fallback (`~/kidecon/workspace`), and the boot-time `set_workspace_dir()` call in `runtime.py`. | Medium |
 
 ### Phase 7 — Security Hardening & Corpus Access
 **Category:** Security, Skills

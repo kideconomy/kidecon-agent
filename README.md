@@ -91,11 +91,12 @@ Remember to `source ~/kidecon-env/bin/activate` in every new terminal.
 ### From zero to running
 
 ```bash
-kidecon init                         # create default config
-kidecon setup --name my-agent        # register with hub, link KidEconomy account
-kidecon key add --name openrouter    # store your OpenRouter API key
-kidecon doctor                       # verify everything is working
-kidecon start                        # launch Hermes
+kidecon init                          # create default config
+kidecon authenticate                  # log in to KidEconomy (stores credentials)
+kidecon agents create --name my-agent # create + register an agent
+kidecon key add --name openrouter     # store your OpenRouter API key
+kidecon doctor                        # verify everything is working
+kidecon start --name my-agent         # launch the agent
 ```
 
 See [docs/ONBOARDING.md](docs/ONBOARDING.md) for the full walkthrough.
@@ -143,7 +144,8 @@ Every agent has a **hub tier** (assigned on the server) and a **cognitive tier**
 ```bash
 kidecon --help
 kidecon init              # create or update configuration
-kidecon setup             # register with hub (links KidEconomy account)
+kidecon authenticate      # log in to KidEconomy (stores credentials)
+kidecon agents create     # create + register an agent
 kidecon start             # launch the agent loop
 kidecon stop              # mark agent offline
 kidecon status            # agent id, registration, tier

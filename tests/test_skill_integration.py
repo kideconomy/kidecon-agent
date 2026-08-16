@@ -40,7 +40,7 @@ def real_hub():
     hub = HubClient(hub_url=HUB_URL)
     skills = hub.discover_skills("")
     if not skills:
-        pytest.skip("No live skills on hub — run kidecon setup and approve skills first")
+        pytest.skip("No live skills on hub — run kidecon agents create and approve skills first")
     logger.info("Hub has %d live skills: %s", len(skills), [s["name"] for s in skills])
     return hub
 

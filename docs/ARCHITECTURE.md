@@ -47,7 +47,7 @@ flowchart TD
 | `wrappers/safety_firewall.py` | `SafetyFirewall` — synchronous ingress/egress safety interceptor for Discord traffic using a paid Llama-3-8B model. Fail-closed. |
 | `shared/llm_clients/`      | **Vendored copy** from kidecon-hub. Multi-provider LLM abstraction (OpenRouter, Together, DeepSeek). **DO NOT EDIT HERE.** Canonical source is in `kidecon-hub/shared/llm_clients/`. Run `make sync-llm` to pull changes. |
 | `cli/__init__.py`          | Package marker; logger.                                                            |
-| `cli/kidecon.py`           | Click CLI: `setup`, `start`, `stop`, `status`, `update`, `key` (add/list), `tier`, `skills` (list/browse). Thin orchestration only. |
+| `cli/kidecon.py`           | Click CLI: `authenticate`, `agents`, `start`, `stop`, `status`, `update`, `key` (add/list), `tier`, `skills` (list/browse). Thin orchestration only. |
 | `install.sh`               | Bootstrap: venv, deps, place config, prompt OpenRouter key → keyring, install Hermes (stubbed), register agent → JWT → keyring. |
 | `requirements.txt`         | Runtime + dev deps.                                                                |
 | `pyproject.toml`           | ruff (kidecon rules minus `DJ`, target py311) + pytest config.                     |
@@ -55,8 +55,8 @@ flowchart TD
 
 ## Data Flow
 
-1. **Install** (`install.sh`): creates `env/`, installs deps, copies `kidecon.yaml` to `~/.config/kidecon/`, prompts for OpenRouter key -> keyring, runs `kidecon setup`.
-2. **Register** (`kidecon setup`): `HubClient.register()` POSTs to `/api/register_agent`, stores JWT + agent_id in keyring.
+1. **Install** (`install.sh`): creates `env/`, installs deps, copies `kidecon.yaml` to `~/.config/kidecon/`, prompts for OpenRouter key -> keyring, runs `kidecon authenticate`.
+2. **Register** (`kidecon agents create`): `create_profile()` POSTs to `/api/register_agent`, stores JWT + agent_id in keyring.
 3. **Run** (`kidecon start`): enters the Hermes runtime loop — pulls MCP manifest from hub, long-polls for messages, routes each message through ingress safety → LLM (with dynamic tier selection) → egress safety → respond. Handles SIGINT/SIGTERM (mark offline), 401 (prompt re-register), 403 (KE account disabled / agent deactivated / ownership mismatch — surface the hub's reason and exit non-zero, no retry), and network dropouts (exponential backoff).
 4. **Tool call**: agent invokes an allowed tool — local (`wrappers/tools.py`) or hub (`HubClient.hub_call()` via `/api/mcp/call`).
 5. **User script**: `UserScriptSandbox.execute()` runs a script from `~/kidecon/user_scripts/`; first run requires approval (recorded in `~/kidecon/.approved_scripts`); 60s timeout enforced.

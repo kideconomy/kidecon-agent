@@ -82,9 +82,9 @@ See `skills/README.md` for the skill format if you want to contribute one.
 
 ## Troubleshooting
 
-- **`Not registered. Run 'kidecon setup' first.`** -- registration failed or was skipped. Re-run `kidecon setup --name <name>` with the hub running.
-- **`Access blocked by the hub. Reason: ...` (HTTP 403, runtime exits)** -- the hub cut this agent off. The `Reason:` is the hub's own explanation and is one of: your KidEconomy account has been disabled (an admin ran `ban_user`), this agent was deactivated, or registration tried to re-link an agent already owned by a different KE account. The agent marks itself offline and stops — it will not retry on its own. Contact your administrator, or re-run `kidecon setup` / `kidecon agents create` with the correct KidEconomy account.
-- **`JWT expired — run 'kidecon setup' to re-register` (HTTP 401, runtime exits)** -- the hub JWT expired (default 24h). Re-run `kidecon setup` to rotate it.
+- **`Not registered. Run 'kidecon agents create' first.`** -- registration failed or was skipped. Re-run `kidecon agents create --name <name>` with the hub running.
+- **`Access blocked by the hub. Reason: ...` (HTTP 403, runtime exits)** -- the hub cut this agent off. The `Reason:` is the hub's own explanation and is one of: your KidEconomy account has been disabled (an admin ran `ban_user`), this agent was deactivated, or registration tried to re-link an agent already owned by a different KE account. The agent marks itself offline and stops — it will not retry on its own. Contact your administrator, or re-run `kidecon authenticate` / `kidecon agents create` with the correct KidEconomy account.
+- **`JWT expired — run 'kidecon agents create' to re-register` (HTTP 401, runtime exits)** -- the hub JWT expired (default 24h). Re-run `kidecon agents create` to rotate it.
 - **`Error: Python 3.14 not found.`** -- install Python 3.14 and ensure `python3.14` is on PATH.
 - **Hub connection errors** -- confirm `kidecon.yaml` `hub_url` points at a reachable hub.
 

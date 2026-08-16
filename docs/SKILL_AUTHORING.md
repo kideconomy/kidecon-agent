@@ -10,10 +10,13 @@ Complete guide for adding a skill to the Kidecon hub — from zero to live.
 # 1. Initialize the agent for local development
 kidecon init --hub http://localhost:8000
 
-# 2. Register with the hub
-kidecon setup --name my-dev-agent
+# 2. Authenticate with KidEconomy
+kidecon authenticate
 
-# 3. Generate a starter template (writes to gitignored tmp/)
+# 3. Create and register an agent
+kidecon agents create --name my-dev-agent
+
+# 4. Generate a starter template (writes to gitignored tmp/)
 kidecon skills template -o tmp/my-skill.json
 
 # 4. Edit tmp/my-skill.json with your skill definition (see format below)
@@ -181,7 +184,7 @@ kidecon skills submit --name my-skill --category scheduling --description "..."
 
 ```
 kidecon init                            # Setup agent config for a hub environment
-kidecon setup --name <name>             # Register agent, store JWT in keyring
+kidecon agents create --name <name>       # Register agent, store JWT in keyring
 kidecon status                          # Agent ID, tier, registration status
 
 kidecon skills categories               # List valid skill category namespaces

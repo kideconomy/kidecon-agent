@@ -15,6 +15,7 @@ KEYRING_SERVICE = "kidecon-agent"
 KEY_JWT = "hub_jwt"
 KEY_AGENT_ID = "agent_id"
 KEY_KE_USERNAME = "kideconomy_username"
+KEY_KE_TOKEN = "kideconomy_token"
 
 
 class HubClient:
@@ -64,12 +65,23 @@ class HubClient:
         import keyring
 
         keyring.set_password(KEYRING_SERVICE, KEY_KE_USERNAME, username)
+        keyring.set_password(KEYRING_SERVICE, KEY_KE_TOKEN, token)
         if self._profile:
             self._profile.ke_username = username
             from wrappers.profile_store import save_profile
 
             save_profile(self._profile)
         return token
+
+    def get_stored_ke_token(self) -> str | None:
+        import keyring
+
+        return keyring.get_password(KEYRING_SERVICE, KEY_KE_TOKEN)
+
+    def get_stored_ke_username(self) -> str | None:
+        import keyring
+
+        return keyring.get_password(KEYRING_SERVICE, KEY_KE_USERNAME)
 
     def register(
         self,
@@ -121,7 +133,9 @@ class HubClient:
 
     def _auth_headers(self) -> dict:
         if not self.jwt:
-            raise RuntimeError("Not registered. Run `kidecon setup` first.")
+            raise RuntimeError(
+                "Not registered. Run `kidecon authenticate` then `kidecon agents create` first."
+            )
         return {"Authorization": f"Bearer {self.jwt}"}
 
     def hub_call(self, tool_name: str, params: dict) -> dict:
@@ -138,7 +152,7 @@ class HubClient:
             raise RuntimeError(f"Tool '{tool_name}' rejected by hub: {detail}") from None
         if response.status_code == 401:
             raise RuntimeError(
-                "Not authorized — JWT may be expired. Re-run 'kidecon setup'."
+                "Not authorized — JWT may be expired. Re-run 'kidecon agents create'."
             ) from None
         response.raise_for_status()
         return response.json()
@@ -247,7 +261,7 @@ class HubClient:
             raise RuntimeError(f"Profile fetch rejected by hub: {detail}") from None
         if response.status_code == 401:
             raise RuntimeError(
-                "Not authorized — JWT may be expired. Re-run 'kidecon setup'."
+                "Not authorized — JWT may be expired. Re-run 'kidecon agents create'."
             ) from None
         response.raise_for_status()
         return response.json()

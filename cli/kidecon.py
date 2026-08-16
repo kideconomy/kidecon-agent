@@ -161,7 +161,7 @@ def require_auth() -> HubClient:
     """
     client = hub_client()
     if not client.jwt:
-        console.print("[bold red]✗[/bold red] Not registered. Run [bold]kidecon setup[/bold] first.")
+        console.print("[bold red]✗[/bold red] Not registered. Run [bold]kidecon agents create[/bold] first.")
         raise typer.Exit(code=1)
     return client
 
@@ -184,10 +184,10 @@ def init(
     Writes config to ~/.config/kidecon/kidecon.yaml and clears any
     existing registration so you can register fresh.
 
-    Examples:
-        kidecon init                                        # local dev
-        kidecon init --hub https://hub.kidecon.me \\
-                     --kideconomy-api https://kidecon.me   # production
+    Defaults to production URLs. For local dev, pass localhost explicitly:
+
+        kidecon init --hub http://localhost:8000 \\
+                     --kideconomy-api http://localhost:8090   # local dev
     """
     import yaml as _yaml
 
@@ -320,36 +320,52 @@ def workspace(
         raise typer.Exit(code=1) from None
 
     resolved = pathlib.Path(path).expanduser().resolve()
+
+    if resolved.exists():
+        if not resolved.is_dir():
+            console.print(f"[bold red]✗[/bold red] {resolved} exists but is not a directory.")
+            raise typer.Exit(code=1)
+        entries = list(resolved.iterdir())
+        if entries:
+            console.print(
+                f"[bold yellow]⚠[/bold yellow] Directory already contains {len(entries)} existing item(s) — nothing modified."
+            )
+        else:
+            console.print("[dim]Directory already exists (empty).[/dim]")
+    else:
+        resolved.mkdir(parents=True, exist_ok=True)
+        console.print(f"[bold green]✓[/bold green] Created directory: {resolved}")
+
     config["workspace_dir"] = str(resolved)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(yaml.dump(config, default_flow_style=False))
     console.print(f"[bold green]✓[/bold green] Working directory set to: {resolved}")
-    console.print("[dim]Restart the agent for the change to take effect.[/dim]")
+
+    running = [p for p in list_profile_objects() if read_pid(p)]
+    if running:
+        console.print(
+            f"[bold yellow]⚠[/bold yellow] {len(running)} agent(s) are running — "
+            "restart them for the new workspace to take effect."
+        )
+    else:
+        console.print("[dim]Takes effect the next time the agent starts.[/dim]")
 
 
 # ------------------------------------------------------------------
-# setup (creates a single standalone agent — the simplest path)
+# authenticate (KidEconomy login — stores credentials for agent creation)
 # ------------------------------------------------------------------
 @app.command()
-def setup(
-    agent_display_name: str = typer.Option(
-        ..., "--agent-display-name", prompt="Agent display name (e.g. my-laptop)",
-        help="Display label for this agent instance.",
-    ),
+def authenticate(
     ke_username: str = typer.Option(
         None, "--ke-username",
         help="Your KidEconomy username (prompts if not provided).",
     ),
 ):
-    """Register a standalone agent with the hub.
+    """Authenticate with KidEconomy and store credentials for agent registration.
 
-    This is the simplest path — creates a single standalone agent that
-    handles everything itself. For multi-agent swarms (orchestrator +
-    workers), use [bold]kidecon agents create[/bold] instead.
-
-    Authenticates against KidEconomy using your username and password,
-    then registers the agent with the hub. Your password is never
-    stored — it's used once to get a DRF token and then discarded.
+    Logs in to KidEconomy and stores the account token in the keyring. Your
+    password is never stored — it's used once to obtain a token and discarded.
+    After authenticating, create an agent with `kidecon agents create`.
     """
     import getpass
 
@@ -369,7 +385,7 @@ def setup(
 
     console.print(f"[dim]Authenticating against KidEconomy ({ke_api_url})...[/dim]")
     try:
-        ke_token = HubClient(
+        HubClient(
             hub_url=hub_url,
             kideconomy_api_url=ke_api_url,
         ).fetch_ke_token(ke_username, password)
@@ -379,32 +395,8 @@ def setup(
     finally:
         del password
 
-    console.print(f"[dim]Registering agent with hub ({hub_url})...[/dim]")
-    try:
-        profile = create_profile(
-            name=agent_display_name,
-            role="standalone",
-            hub_url=hub_url,
-            ke_token=ke_token,
-        )
-    except FileExistsError:
-        console.print(f"[bold yellow]⚠[/bold yellow] Profile '{agent_display_name}' already exists locally.")
-        console.print("  Use [bold]kidecon agents delete[/bold] to remove it, or pick a different name.")
-        raise typer.Exit(code=1)
-    except Exception as err:
-        _print_error(err, "Hub registration failed")
-        raise typer.Exit(code=1) from err
-
-    console.print()
-    console.print("[bold green]✓[/bold green] Agent registered and linked to KidEconomy account.")
-    console.print(f"  [bold cyan]Profile:[/bold cyan]         {profile.name}")
-    console.print(f"  [bold cyan]Agent ID:[/bold cyan]        {profile.agent_id}")
-    console.print(f"  [bold cyan]Role:[/bold cyan]           {profile.role}")
-    console.print(f"  [bold cyan]KE user:[/bold cyan]        {ke_username}")
-    console.print(f"  [bold cyan]Hub:[/bold cyan]            {hub_url}")
-    console.print()
-    console.print(f"Profile saved. Run [bold]kidecon start --name {profile.name}[/bold] to boot.")
-    console.print("[dim]Need a multi-agent swarm? Use [bold]kidecon agents create --role orchestrator|worker[/bold][/dim]")
+    console.print(f"[bold green]✓[/bold green] Authenticated as {ke_username}.")
+    console.print("[dim]Next: [bold]kidecon agents create --name <name> --role standalone[/bold][/dim]")
 
 
 # ------------------------------------------------------------------
@@ -415,7 +407,11 @@ def start(
     name: str = typer.Option(None, "--name", help="Agent profile name to start"),
     background: bool = typer.Option(False, "--background", "-b", help="Run as background daemon"),
 ):
-    """Launch Hermes — enter the long-poll loop and process incoming messages."""
+    """Launch Hermes — enter the long-poll loop and process incoming messages.
+
+    Runs in the foreground (Ctrl+C to stop). Use `--background` (`-b`) to run
+    it as a background daemon; stop it with `kidecon agents stop --name <name>`.
+    """
     import httpx
 
     config = load_config()
@@ -442,7 +438,7 @@ def start(
     try:
         tier = client.get_tier()
     except Exception as err:
-        console.print("[bold red]✗[/bold red] JWT invalid or expired. Re-run '[bold]kidecon setup[/bold]' or '[bold]kidecon agents create[/bold]'.")
+        console.print("[bold red]✗[/bold red] JWT invalid or expired. Re-run '[bold]kidecon agents create[/bold]'.")
         raise typer.Exit(code=1) from err
 
     if background:
@@ -580,7 +576,7 @@ def agents_list(
     """List all local agent profiles."""
     names = list_profiles()
     if not names:
-        console.print("[dim]No agent profiles found. Create one with [bold]kidecon agents create[/bold] or [bold]kidecon setup[/bold].[/dim]")
+        console.print("[dim]No agent profiles found. Create one with [bold]kidecon agents create[/bold].[/dim]")
         return
 
     active = get_active()
@@ -629,38 +625,26 @@ def agents_list(
 def agents_create(
     name: str = typer.Option(..., "--name", prompt="Agent profile name", help="Unique name for this agent profile"),
     role: str = typer.Option("standalone", "--role", help="Agent role: orchestrator, worker, or standalone"),
-    ke_username: str = typer.Option(None, "--ke-username", help="KidEconomy username"),
 ):
-    """Create and register a new agent profile."""
-    import getpass
+    """Create and register a new agent profile.
 
+    Requires a prior `kidecon authenticate`. Uses the stored KidEconomy
+    credentials to register the agent with the hub — no password prompt.
+    """
     if role not in ("orchestrator", "worker", "standalone"):
         console.print(f"[bold red]✗[/bold red] Invalid role: '{role}'. Use: orchestrator, worker, standalone.")
         raise typer.Exit(code=1)
 
     config = load_config()
     hub_url = config["hub_url"]
-    ke_api_url = config.get("kideconomy_api_url", "")
 
-    if not ke_api_url:
-        console.print("[bold red]✗[/bold red] KidEconomy API URL not configured. Run [bold]kidecon init[/bold] first.")
+    client = HubClient(hub_url=hub_url)
+    ke_username = client.get_stored_ke_username()
+    ke_token = client.get_stored_ke_token()
+    if not ke_token:
+        console.print("[bold red]✗[/bold red] Not authenticated.")
+        console.print("  Run [bold]kidecon authenticate[/bold] first.")
         raise typer.Exit(code=1)
-
-    if not ke_username:
-        ke_username = typer.prompt("KidEconomy username")
-
-    password = getpass.getpass("KidEconomy password: ")
-
-    try:
-        ke_token = HubClient(
-            hub_url=hub_url,
-            kideconomy_api_url=ke_api_url,
-        ).fetch_ke_token(ke_username, password)
-    except Exception as err:
-        _print_error(err, "KidEconomy authentication failed")
-        raise typer.Exit(code=1) from err
-    finally:
-        del password
 
     try:
         profile = create_profile(
@@ -675,6 +659,10 @@ def agents_create(
     except Exception as err:
         _print_error(err, "Registration failed")
         raise typer.Exit(code=1) from err
+
+    if ke_username:
+        profile.ke_username = ke_username
+        save_profile(profile)
 
     console.print(f"[bold green]✓[/bold green] Agent '{name}' created and registered.")
     console.print(f"  Role: {profile.role} | Agent ID: {profile.agent_id}")
@@ -1497,24 +1485,24 @@ def doctor():
                 _add("Hub", "JWT", "pass", f"valid (tier {tier_val})")
             except Exception as e:
                 _add("Hub", "JWT", "fail", str(e),
-                     "Re-register with `kidecon setup`")
+                     "Re-register with `kidecon agents create`")
         else:
             _add("Hub", "JWT", "fail", "not set",
-                 "Register with `kidecon setup`")
+                 "Register with `kidecon agents create`")
 
         agent_id = keyring.get_password(KEYRING_SERVICE, KEY_AGENT_ID)
         if agent_id:
             _add("Hub", "Agent ID", "pass", agent_id)
         else:
             _add("Hub", "Agent ID", "fail", "not set",
-                 "Run `kidecon setup` to generate")
+                 "Run `kidecon agents create` to generate")
 
         ke_user = keyring.get_password(KEYRING_SERVICE, "kideconomy_username")
         if ke_user:
             _add("Hub", "KE username", "pass", ke_user)
         else:
             _add("Hub", "KE username", "fail", "not set",
-                 "Run `kidecon setup` to link your KidEconomy account")
+                 "Run `kidecon authenticate` to link your KidEconomy account")
     else:
         _add("Hub", "Reachable", "warn", "skipped (no config)", "Fix config first")
         _add("Hub", "JWT", "warn", "skipped")

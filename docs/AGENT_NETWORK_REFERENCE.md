@@ -118,7 +118,7 @@ flowchart TB
 | Telemetry model | `kidecon-hub` | `models.py:73-81` | Live, **domains_accessed unused** | `tool_called` written on every MCP call; `domains_accessed` JSON field exists but never populated |
 | `Agent` model | `kidecon-hub` | `models.py:28-41` | Live | id, name, tier, jwt_secret, status, last_seen |
 | `Message` model | `kidecon-hub` | `models.py:57-70` | Live | from/to agent, type, payload, reply_to, status |
-| Click CLI lifecycle | `kidecon-agent` | `cli/kidecon.py` | Live, stubs | `setup/start/stop/status/update/key/tier/skills/admin` |
+| Click CLI lifecycle | `kidecon-agent` | `cli/kidecon.py` | Live, stubs | `authenticate/agents/start/stop/status/update/key/tier/skills/admin` |
 | Hub HTTP client | `kidecon-agent` | `wrappers/hub_client.py` | Live | register, hub_call, poll, respond, send, discover, get_tier |
 | Local tools | `kidecon-agent` | `wrappers/tools.py` | Live, **weak path check** | `file_read`, `file_append_markdown`, `message_user` (stub: print) |
 | User-script sandbox | `kidecon-agent` | `wrappers/sandbox.py:27-54` | Live, **NOT a real sandbox** | `subprocess.run` + 60s timeout + first-run approval; no seccomp/AppArmor, no net-egress block |
@@ -417,7 +417,7 @@ Every scenario where the laptop cannot immediately service a turn must have a de
 - *Config:* hub JWT expires at `JWT_EXPIRE_MINUTES` (default 1440 = 24h, `config.py:12`). On expiry, `get_current_agent` 401s. The agent must re-run `register()` (which rotates the secret). `doctor` should detect 401s and offer re-register.
 
 **F12 — Hard 403 (account/agent state).**
-- *Config:* the hub re-verifies the agent's KidEconomy user on every authenticated request (TTL-cached ~300s) and returns **403** — distinct from the 401 of F11 — when the KE account has been disabled (`ban_user`), the agent row is deactivated, or registration tries to re-link an agent already owned by a different KE user. The hub distinguishes these only by the JSON `detail` string. The runtime loop surfaces the real `detail` in a three-part message (what / why / next), marks itself offline if reachable, and exits non-zero. It does **not** retry or auto-re-register: the KE password is never persisted, so recovery requires an admin un-ban (KE-disabled) or the user re-running `kidecon setup` / `kidecon agents create` with the correct account. Transient KE outages are fail-open at the hub, so a 403 here is always a genuine block, never a flap.
+- *Config:* the hub re-verifies the agent's KidEconomy user on every authenticated request (TTL-cached ~300s) and returns **403** — distinct from the 401 of F11 — when the KE account has been disabled (`ban_user`), the agent row is deactivated, or registration tries to re-link an agent already owned by a different KE user. The hub distinguishes these only by the JSON `detail` string. The runtime loop surfaces the real `detail` in a three-part message (what / why / next), marks itself offline if reachable, and exits non-zero. It does **not** retry or auto-re-register: the KE password is never persisted, so recovery requires an admin un-ban (KE-disabled) or the user re-running `kidecon authenticate` / `kidecon agents create` with the correct account. Transient KE outages are fail-open at the hub, so a 403 here is always a genuine block, never a flap.
 
 #### 3.8.3 Default routing policy (the recommended combination)
 
@@ -497,8 +497,8 @@ Under the **current polling transport**, several fallbacks behave differently:
 | Keychain prompt confusion | User denies keychain access → secrets lost | Onboarding screen explains the prompt; `doctor` detects denied keychain and re-prompts. |
 | Discord account not linked | Bot Master has no `discord_user_id` | `doctor` detects → deep-links to kidecon profile page → re-run linkage flow. |
 | Laptop asleep at 6am | No live turns | F1/F2/F3/F6 — designed for this exact case. |
-| Hub JWT expired | API calls 401 | `doctor` detects; offers "re-register" → `kidecon setup` re-issues JWT (F11). |
-| KE account disabled / agent deactivated | API calls 403 | Runtime surfaces the hub's reason and exits (F12). Not self-healable — admin must un-ban, or user re-runs `kidecon setup` with the correct account. |
+| Hub JWT expired | API calls 401 | `doctor` detects; offers "re-register" → `kidecon agents create` re-issues JWT (F11). |
+| KE account disabled / agent deactivated | API calls 403 | Runtime surfaces the hub's reason and exits (F12). Not self-healable — admin must un-ban, or user re-runs `kidecon agents create` with the correct account. |
 | Network egress blocked (corp firewall) | Poll/WS to hub fails; OpenRouter call fails | `doctor` tests hub + OpenRouter reachability; documents required firewall exceptions. |
 | NAT / home router drops long connection | Silent disconnect (only relevant if WS adopted) | Heartbeat + backoff (F7); user sees "reconnecting…" in `doctor`. |
 | Wrong OS architecture | Apple Silicon vs Intel, ARM Windows | Auto-detect arch; ship universal binaries; refuse to install on mismatched arch with a clear message. |
@@ -598,12 +598,12 @@ Today the hub writes a `Telemetry` row on every MCP call (`api/mcp_gateway.py:67
 
 | Credential | Path A (pip) | Path B/C (installer) | Path D (tray) | Path E (hosted) |
 |---|---|---|---|---|
-| Hub JWT | `kidecon setup` issues + stores | Pre-baked in signed config (or registration code) | Pre-baked | Server-side |
+| Hub JWT | `kidecon agents create` issues + stores | Pre-baked in signed config (or registration code) | Pre-baked | Server-side |
 | OpenRouter key | Prompted, keyring | Portal offers to set; else prompt | Prompted | Server-side |
 | Discord bot token | **Never on laptop** (hub/pm) | Never | Never | Server-side |
 | GitHub PAT (for sync, if built) | Prompted | Prompted (or GitHub OAuth in portal) | Prompted | Server-side |
 
-**Net for normies (Path C):** the laptop ends up with **one** secret in the keyring (hub JWT, pre-baked or registration-code-issued) and optionally an OpenRouter key. The Discord token never touches the laptop. This is the minimum-secret normie config. Note: with the hub's current model, the JWT is *issued by the hub on register*, so "pre-baked JWT" means the installer embeds a registration code that the first-run `setup` exchanges for a JWT.
+**Net for normies (Path C):** the laptop ends up with **one** secret in the keyring (hub JWT, pre-baked or registration-code-issued) and optionally an OpenRouter key. The Discord token never touches the laptop. This is the minimum-secret normie config. Note: with the hub's current model, the JWT is *issued by the hub on register*, so "pre-baked JWT" means the installer embeds a registration code that the first-run `agents create` exchanges for a JWT.
 
 ### 5.9 Code signing & notarization requirements
 

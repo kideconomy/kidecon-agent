@@ -184,7 +184,7 @@ def run_forever(client: "HubClient", config: dict, is_orchestrator: bool = False
             backoff = 1.0
         except httpx.HTTPStatusError as e:
             if e.response.status_code == _HTTP_UNAUTHORIZED:
-                logger.fatal("JWT expired — run 'kidecon setup' to re-register")
+                logger.fatal("JWT expired — run 'kidecon agents create' to re-register")
                 with contextlib.suppress(Exception):
                     client.update_status("offline")
                 sys.exit(1)
@@ -196,7 +196,7 @@ def run_forever(client: "HubClient", config: dict, is_orchestrator: bool = False
                 logger.fatal(
                     "Access blocked by the hub. Reason: %s. "
                     "To regain access, contact your administrator, or "
-                    "run 'kidecon setup' / 'kidecon agents create' with "
+                    "run 'kidecon authenticate' / 'kidecon agents create' with "
                     "the correct KidEconomy account.",
                     detail,
                 )
