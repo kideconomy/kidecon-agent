@@ -3,10 +3,13 @@
 Replaces the single-keyring model with a directory of JSON profiles:
     ~/.config/kidecon/agents/<name>.json
 
-Each profile contains {agent_id, name, jwt, ke_username, role}.
-The active profile is tracked via ~/.config/kidecon/agents/.active
+Each profile file holds non-secret metadata {agent_id, name, ke_username, role}.
+The JWT is a credential and is stored in the OS keyring under a per-agent key
+(jwt_<name>), never on disk. The active profile is tracked via
+~/.config/kidecon/agents/.active
 """
 
+import contextlib
 import json
 import logging
 import pathlib
@@ -16,14 +19,16 @@ from typing import Optional
 
 import httpx
 
+from wrappers.keys import KEY_AGENT_ID
+from wrappers.keys import KEY_JWT
+from wrappers.keys import KEY_KE_USERNAME
+from wrappers.keys import KEYRING_SERVICE
+from wrappers.keys import jwt_key
+
 logger = logging.getLogger(__name__)
 
 PROFILES_DIR = pathlib.Path.home() / ".config" / "kidecon" / "agents"
 ACTIVE_FILE = PROFILES_DIR / ".active"
-KEYRING_SERVICE = "kidecon-agent"
-KEY_JWT = "hub_jwt"
-KEY_AGENT_ID = "agent_id"
-KEY_KE_USERNAME = "kideconomy_username"
 
 VALID_ROLES = {"orchestrator", "worker", "standalone"}
 
@@ -49,10 +54,10 @@ class Profile:
         self.role = role if role in VALID_ROLES else "standalone"
 
     def to_dict(self) -> dict:
+        # jwt is intentionally omitted — it lives in the keyring, never on disk.
         return {
             "agent_id": self.agent_id,
             "name": self.name,
-            "jwt": self.jwt,
             "ke_username": self.ke_username,
             "role": self.role,
         }
@@ -62,7 +67,7 @@ class Profile:
         return cls(
             agent_id=d["agent_id"],
             name=d["name"],
-            jwt=d.get("jwt"),
+            jwt=d.get("jwt"),  # legacy fallback: old files may still embed a jwt
             ke_username=d.get("ke_username"),
             role=d.get("role", "standalone"),
         )
@@ -86,27 +91,41 @@ def _ensure_dirs() -> None:
 
 
 def save_profile(profile: Profile) -> None:
-    """Persist a profile to disk."""
+    """Persist a profile: non-secret fields to disk, the JWT to the keyring."""
     _ensure_dirs()
+    if profile.jwt:
+        import keyring
+
+        keyring.set_password(KEYRING_SERVICE, jwt_key(profile.name), profile.jwt)
     profile.path.write_text(json.dumps(profile.to_dict(), indent=2))
     profile.path.chmod(0o600)
 
 
 def load_profile(name: str) -> Profile | None:
-    """Load a profile by name from disk. Returns None if not found."""
+    """Load a profile by name. The JWT is resolved from the keyring, not disk."""
     path = PROFILES_DIR / f"{name}.json"
     if not path.exists():
         return None
     try:
         data = json.loads(path.read_text())
-        return Profile.from_dict(data)
+        profile = Profile.from_dict(data)
     except (json.JSONDecodeError, KeyError) as e:
         logger.warning("Corrupt profile %s: %s", name, e)
         return None
 
+    import keyring
+
+    try:
+        keyring_jwt = keyring.get_password(KEYRING_SERVICE, jwt_key(name))
+    except Exception:
+        keyring_jwt = None
+    if keyring_jwt:
+        profile.jwt = keyring_jwt
+    return profile
+
 
 def delete_profile(name: str) -> bool:
-    """Delete a profile. Returns True if the file was removed."""
+    """Delete a profile (file + pid + its keyring JWT). Returns True on success."""
     path = PROFILES_DIR / f"{name}.json"
     pid_path = PROFILES_DIR / f"{name}.pid"
     if path.exists():
@@ -115,6 +134,10 @@ def delete_profile(name: str) -> bool:
         pid_path.unlink()
     if get_active() == name:
         _clear_active()
+    import keyring
+
+    with contextlib.suppress(Exception):
+        keyring.delete_password(KEYRING_SERVICE, jwt_key(name))
     return True
 
 
@@ -325,9 +348,15 @@ def set_profile_role(name: str, new_role: str) -> Profile | None:
 
 
 def nuke_all_profiles() -> list[str]:
-    """Delete all agent profiles and the agents directory. Returns list of deleted names."""
+    """Delete all agent profiles, their keyring JWTs, and the agents directory."""
     import shutil
+
+    import keyring
+
     names = list_profiles()
+    for name in names:
+        with contextlib.suppress(Exception):
+            keyring.delete_password(KEYRING_SERVICE, jwt_key(name))
     if PROFILES_DIR.exists():
         shutil.rmtree(PROFILES_DIR)
     return names

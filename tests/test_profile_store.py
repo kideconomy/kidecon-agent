@@ -106,3 +106,41 @@ class TestCreateProfileErrorMapping:
 
     def test_409_non_json_body_uses_fallback(self):
         self._run(_mock_post_response(409, None), "already registered")
+
+
+class TestJwtKeptInKeyring:
+    def test_to_dict_omits_jwt(self):
+        assert "jwt" not in _profile().to_dict()
+
+    def test_save_writes_jwt_to_keyring_and_not_to_disk(self, tmp_path, monkeypatch):
+        import keyring as kr
+
+        import wrappers.profile_store as ps
+
+        monkeypatch.setattr(ps, "PROFILES_DIR", tmp_path)
+        captured = {}
+        monkeypatch.setattr(kr, "set_password", lambda svc, key, val: captured.__setitem__(key, val))
+
+        ps.save_profile(_profile())
+
+        assert captured == {"jwt_my-agent": "old-jwt"}
+        raw = (tmp_path / "my-agent.json").read_text()
+        assert "old-jwt" not in raw
+        assert '"jwt"' not in raw
+
+    def test_load_recovers_jwt_from_keyring(self, tmp_path, monkeypatch):
+        import keyring as kr
+
+        import wrappers.profile_store as ps
+
+        monkeypatch.setattr(ps, "PROFILES_DIR", tmp_path)
+        monkeypatch.setattr(
+            kr,
+            "get_password",
+            lambda svc, key: "keyring-jwt" if key == "jwt_my-agent" else None,
+        )
+
+        ps.save_profile(_profile())
+        loaded = ps.load_profile("my-agent")
+
+        assert loaded.jwt == "keyring-jwt"

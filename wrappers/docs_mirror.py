@@ -33,12 +33,13 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-from wrappers.hub_client import KEYRING_SERVICE
+from wrappers.keys import KEYRING_SERVICE
+from wrappers.keys import api_key
 from wrappers.tools import workspace_dir
 
 logger = logging.getLogger(__name__)
 
-KEYRING_KEY = "api_key_github-docs"
+KEYRING_KEY = api_key("github-docs")
 
 DOCS_MIRROR_DIRNAME = "legal-docs"
 

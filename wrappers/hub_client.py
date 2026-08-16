@@ -5,17 +5,16 @@ from typing import TYPE_CHECKING
 import httpx
 
 from wrappers._http import hub_detail
+from wrappers.keys import KEY_AGENT_ID
+from wrappers.keys import KEY_JWT
+from wrappers.keys import KEY_KE_TOKEN
+from wrappers.keys import KEY_KE_USERNAME
+from wrappers.keys import KEYRING_SERVICE
 
 if TYPE_CHECKING:
     from wrappers.profile_store import Profile
 
 logger = logging.getLogger(__name__)
-
-KEYRING_SERVICE = "kidecon-agent"
-KEY_JWT = "hub_jwt"
-KEY_AGENT_ID = "agent_id"
-KEY_KE_USERNAME = "kideconomy_username"
-KEY_KE_TOKEN = "kideconomy_token"
 
 
 class HubClient:

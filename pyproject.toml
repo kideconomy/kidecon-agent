@@ -82,6 +82,14 @@ force-single-line = true
     "S105",   # KEY_KE_TOKEN is a keyring key NAME, not a hardcoded secret
     "PLC0415",# lazy keyring import avoids import-time backend requirement
 ]
+"wrappers/profile_store.py" = [
+    "PLC0415",# lazy keyring import avoids import-time backend requirement
+    "BLE001",  # best-effort keyring read: backend may be unavailable, fall back to None
+]
+"wrappers/keys.py" = [
+    "PLC0415",# lazy keyring import avoids import-time backend requirement
+    "S105",   # KEY_KE_TOKEN is a keyring key NAME, not a hardcoded secret
+]
 "wrappers/sandbox.py" = [
     "FBT001", # boolean positional arg (auto_approve) per template API
     "FBT002", # boolean default positional arg

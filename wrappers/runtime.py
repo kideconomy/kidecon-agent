@@ -44,11 +44,12 @@ def _init_llm(config: dict) -> tuple[Any, SafetyFirewall, dict, str, str, float]
 
     import keyring
 
-    from wrappers.hub_client import KEYRING_SERVICE
+    from wrappers.keys import KEYRING_SERVICE
+    from wrappers.keys import api_key
 
-    api_key_name = f"api_key_{provider_name}"
-    api_key = keyring.get_password(KEYRING_SERVICE, api_key_name)
-    if not api_key:
+    api_key_name = api_key(provider_name)
+    api_key_value = keyring.get_password(KEYRING_SERVICE, api_key_name)
+    if not api_key_value:
         logger.error(
             "No API key for '%s' in keyring. Run: kidecon key add --name %s --value <key>",
             provider_name,
@@ -56,7 +57,7 @@ def _init_llm(config: dict) -> tuple[Any, SafetyFirewall, dict, str, str, float]
         )
         sys.exit(1)
 
-    factory = LLMClientFactory.create(provider=provider_name, api_key=api_key)
+    factory = LLMClientFactory.create(provider=provider_name, api_key=api_key_value)
     safety = SafetyFirewall(factory, models.get("safety", "meta-llama/llama-3-8b-instruct"))
     return factory, safety, models, system_prompt, provider_name, max_price
 

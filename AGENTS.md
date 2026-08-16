@@ -16,8 +16,7 @@ Read at the start of every session. Canonical source of truth for stack, convent
 
 ## 3. Safety & Git Rules
 - **NO COMMITS.** Never `git commit` or `git add` unless explicitly requested.
-- Never hardcode secrets. Use keyring.
-- Never write API keys, JWTs, or credentials to files.
+- **Never hardcode secrets, and never write secrets to disk.** All credentials (JWTs, API keys, KE tokens) live exclusively in the OS keyring via `keyring.set_password`. They must never be written to any file — no JSON profiles, YAML config, logs, caches, or any `write_text()`/`json.dump()`/`open()` path. Any object that holds a secret and is serialized (e.g. a `to_dict()`) MUST exclude the secret from its output. Only non-secret identifiers (`agent_id`, usernames) may be persisted to files.
 - Sandbox must enforce: no filesystem access outside designated dirs, 60s timeout, first-run approval.
 
 ## 4. Access Control & Safety

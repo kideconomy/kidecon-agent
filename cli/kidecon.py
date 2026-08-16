@@ -15,10 +15,16 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from wrappers.hub_client import KEY_AGENT_ID
-from wrappers.hub_client import KEY_JWT
-from wrappers.hub_client import KEYRING_SERVICE
 from wrappers.hub_client import HubClient
+from wrappers.keys import INDEX_PATH
+from wrappers.keys import KEY_AGENT_ID
+from wrappers.keys import KEY_JWT
+from wrappers.keys import KEY_KE_TOKEN
+from wrappers.keys import KEY_KE_USERNAME
+from wrappers.keys import KEYRING_SERVICE
+from wrappers.keys import api_key
+from wrappers.keys import list_api_keys
+from wrappers.keys import save_api_keys
 from wrappers.profile_store import (
     Profile,
     create_profile,
@@ -749,7 +755,7 @@ def panic(
     try:
         cleared = 0
         # Clear the 3 well-known internal keys
-        for key in [KEY_JWT, KEY_AGENT_ID, "kideconomy_username"]:
+        for key in [KEY_JWT, KEY_AGENT_ID, KEY_KE_USERNAME]:
             try:
                 existing = keyring.get_password(KEYRING_SERVICE, key)
                 if existing:
@@ -759,8 +765,8 @@ def panic(
                 pass
 
         # Clear all registered API keys (api_key_<name>) from the keyring
-        for api_key_name in _load_key_index():
-            entry = f"api_key_{api_key_name}"
+        for api_key_name in list_api_keys():
+            entry = api_key(api_key_name)
             try:
                 existing = keyring.get_password(KEYRING_SERVICE, entry)
                 if existing:
@@ -771,9 +777,9 @@ def panic(
 
         # Clear the special openrouter key if it exists
         try:
-            or_key = keyring.get_password(KEYRING_SERVICE, "api_key_openrouter")
+            or_key = keyring.get_password(KEYRING_SERVICE, api_key("openrouter"))
             if or_key:
-                keyring.delete_password(KEYRING_SERVICE, "api_key_openrouter")
+                keyring.delete_password(KEYRING_SERVICE, api_key("openrouter"))
                 cleared += 1
         except Exception:
             pass
@@ -782,9 +788,9 @@ def panic(
             console.print(f"  [red]Cleared[/red] {cleared} keyring entry/entries")
 
         # Delete the API key index file
-        if KEYS_INDEX_PATH.exists():
-            KEYS_INDEX_PATH.unlink()
-            console.print(f"  [red]Deleted[/red] {KEYS_INDEX_PATH}")
+        if INDEX_PATH.exists():
+            INDEX_PATH.unlink()
+            console.print(f"  [red]Deleted[/red] {INDEX_PATH}")
     except Exception:
         pass
 
@@ -1068,28 +1074,6 @@ _key_app = typer.Typer(help="Manage API keys in keyring.")
 app.add_typer(_key_app, name="key", help="Manage API keys in keyring.")
 
 
-KEYS_INDEX_PATH = pathlib.Path.home() / ".config" / "kidecon" / "keys.json"
-
-
-def _load_key_index() -> list[str]:
-    """Load the list of user-added API key names from the index file."""
-    if KEYS_INDEX_PATH.exists():
-        import json
-
-        return json.loads(KEYS_INDEX_PATH.read_text())
-    return []
-
-
-def _save_key_index(names: list[str]) -> None:
-    KEYS_INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
-    import json
-
-    KEYS_INDEX_PATH.write_text(json.dumps(sorted(set(names)), indent=2))
-
-
-INTERNAL_KEYS = ["hub_jwt", "agent_id", "kideconomy_username"]
-
-
 def _mask(value: str | None) -> str:
     if value and len(value) > 8:
         return f"{value[:4]}...{value[-4:]}"
@@ -1111,11 +1095,11 @@ def key_add(
     name: str = typer.Option(..., "--name", prompt="Key name (e.g. openrouter)", help="Name of the API key"),
     value: str = typer.Option(..., "--value", prompt="API key value", hide_input=True, help="The API key"),
 ):
-    keyring.set_password(KEYRING_SERVICE, f"api_key_{name}", value)
-    names = _load_key_index()
+    keyring.set_password(KEYRING_SERVICE, api_key(name), value)
+    names = list_api_keys()
     if name not in names:
         names.append(name)
-        _save_key_index(names)
+        save_api_keys(names)
     console.print(f"[bold green]✓[/bold green] Key '[bold]{name}[/bold]' stored.")
 
 
@@ -1124,25 +1108,31 @@ def key_remove(
     name: str = typer.Option(..., "--name", prompt="Key name to remove", help="Name of the API key to remove"),
 ):
     with contextlib.suppress(Exception):
-        keyring.delete_password(KEYRING_SERVICE, f"api_key_{name}")
-    names = _load_key_index()
+        keyring.delete_password(KEYRING_SERVICE, api_key(name))
+    names = list_api_keys()
     if name in names:
         names.remove(name)
-        _save_key_index(names)
+        save_api_keys(names)
     console.print(f"[bold green]✓[/bold green] Key '[bold]{name}[/bold]' removed.")
 
 
 @_key_app.command("list")
 def key_list():
-    api_keys = _load_key_index()
+    api_keys = list_api_keys()
     table = Table(show_header=True, header_style="bold")
     table.add_column("Name")
     table.add_column("Value", overflow="fold")
-    for k in INTERNAL_KEYS:
-        v = keyring.get_password(KEYRING_SERVICE, k)
-        table.add_row(k, _mask(v))
+
+    profile = resolve_profile()
+    table.add_row("jwt", _mask(profile.jwt if profile else None))
+    table.add_row("agent_id", profile.agent_id if profile else "(not set)")
+    ke_user = (profile.ke_username if profile else None) or keyring.get_password(
+        KEYRING_SERVICE, KEY_KE_USERNAME
+    )
+    table.add_row(KEY_KE_USERNAME, _mask(ke_user))
+    table.add_row("kideconomy_token", _mask(keyring.get_password(KEYRING_SERVICE, KEY_KE_TOKEN)))
     for k in api_keys:
-        v = keyring.get_password(KEYRING_SERVICE, f"api_key_{k}")
+        v = keyring.get_password(KEYRING_SERVICE, api_key(k))
         table.add_row(k, _mask(v))
     console.print(table)
 
@@ -1474,12 +1464,14 @@ def doctor():
             _add("Hub", "Reachable", "fail", f"{hub_url} — {e}",
                  "Check hub_url in kidecon.yaml; is kidecon-hub running?")
 
-        jwt = keyring.get_password(KEYRING_SERVICE, KEY_JWT)
+        profile = resolve_profile()
+        jwt = profile.jwt if profile else None
         if jwt:
             try:
                 client = HubClient(
                     hub_url=hub_url,
                     kideconomy_api_url=config.get("kideconomy_api_url", ""),
+                    profile=profile,
                 )
                 tier_val = client.get_tier()
                 _add("Hub", "JWT", "pass", f"valid (tier {tier_val})")
@@ -1490,14 +1482,16 @@ def doctor():
             _add("Hub", "JWT", "fail", "not set",
                  "Register with `kidecon agents create`")
 
-        agent_id = keyring.get_password(KEYRING_SERVICE, KEY_AGENT_ID)
+        agent_id = profile.agent_id if profile else None
         if agent_id:
             _add("Hub", "Agent ID", "pass", agent_id)
         else:
             _add("Hub", "Agent ID", "fail", "not set",
                  "Run `kidecon agents create` to generate")
 
-        ke_user = keyring.get_password(KEYRING_SERVICE, "kideconomy_username")
+        ke_user = (profile.ke_username if profile else None) or keyring.get_password(
+            KEYRING_SERVICE, KEY_KE_USERNAME
+        )
         if ke_user:
             _add("Hub", "KE username", "pass", ke_user)
         else:
@@ -1509,7 +1503,7 @@ def doctor():
         _add("Hub", "Agent ID", "warn", "skipped")
 
     for key_name, description, required in required_keys:
-        v = keyring.get_password(KEYRING_SERVICE, f"api_key_{key_name}")
+        v = keyring.get_password(KEYRING_SERVICE, api_key(key_name))
         if v:
             _add("Keys", key_name, "pass", description)
         elif required:
@@ -1518,11 +1512,11 @@ def doctor():
         else:
             _add("Keys", key_name, "warn", f"optional — {description}")
 
-    api_keys = _load_key_index()
+    api_keys = list_api_keys()
     for key_name in api_keys:
         if key_name in [k for k, _, _ in required_keys]:
             continue
-        v = keyring.get_password(KEYRING_SERVICE, f"api_key_{key_name}")
+        v = keyring.get_password(KEYRING_SERVICE, api_key(key_name))
         _add("Keys", key_name, "pass" if v else "warn",
              "user-added" if v else "indexed but missing")
 
@@ -1530,7 +1524,7 @@ def doctor():
     llm_config = config.get("llm", {}) if "config" in dir() else {}
     models = llm_config.get("models", {})
     max_price = llm_config.get("max_price", 0.01)
-    or_key = keyring.get_password(KEYRING_SERVICE, "api_key_openrouter")
+    or_key = keyring.get_password(KEYRING_SERVICE, api_key("openrouter"))
 
     if not models:
         _add("LLM", "Models config", "fail", "no models section in kidecon.yaml",

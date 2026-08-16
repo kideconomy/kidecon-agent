@@ -19,11 +19,12 @@ import logging
 
 import httpx
 
-from wrappers.hub_client import KEYRING_SERVICE
+from wrappers.keys import KEYRING_SERVICE
+from wrappers.keys import api_key
 
 logger = logging.getLogger(__name__)
 
-KEYRING_KEY = "api_key_lexor"
+KEYRING_KEY = api_key("lexor")
 
 # Curated read-only allowlist. These are the ``legal``-role tools from
 # docs/MCP_INTEGRATION.md. blueprint.plan is intentionally excluded — it opens

@@ -23,6 +23,8 @@ You are a strict, read-only reviewer. You do NOT edit files. You inspect changes
 - Secrets are stored/retrieved exclusively via `keyring` (service `kidecon-agent`).
 - No secrets, API keys, or credentials logged or printed to stdout/stderr.
 - `.kilo/kilo.jsonc`, `kilo.json`, and config files contain no plaintext keys.
+- **Serialization must not leak secrets (BLOCKER):** any object holding a credential (e.g. `Profile.jwt`) that defines `to_dict()`/`save()`/`__str__()` must EXCLUDE the credential from its serialized output. A secret persisted to a JSON/YAML file is a BLOCKER.
+- **Key names come from `wrappers/keys.py`** (constants + `jwt_key()`/`api_key()` helpers) — no key-name string literals or `f"api_key_{...}"` formatting in other modules.
 
 **Tool gate enforcement**
 - Tools invoked by name must appear in `kidecon.yaml` `tool_gate.allow`.

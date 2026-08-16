@@ -96,7 +96,7 @@ kidecon authenticate                  # log in to KidEconomy (stores credentials
 kidecon agents create --name my-agent # create + register an agent
 kidecon key add --name openrouter     # store your OpenRouter API key
 kidecon doctor                        # verify everything is working
-kidecon start --name my-agent         # launch the agent
+kidecon start --name my-agent --background  # launch the agent in the background
 ```
 
 See [docs/ONBOARDING.md](docs/ONBOARDING.md) for the full walkthrough.
