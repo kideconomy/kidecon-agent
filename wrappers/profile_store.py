@@ -19,16 +19,12 @@ from typing import Optional
 
 import httpx
 
-from wrappers.keys import KEY_AGENT_ID
-from wrappers.keys import KEY_JWT
-from wrappers.keys import KEY_KE_USERNAME
 from wrappers.keys import KEYRING_SERVICE
 from wrappers.keys import jwt_key
 
 logger = logging.getLogger(__name__)
 
 PROFILES_DIR = pathlib.Path.home() / ".config" / "kidecon" / "agents"
-ACTIVE_FILE = PROFILES_DIR / ".active"
 
 VALID_ROLES = {"orchestrator", "worker", "standalone"}
 
@@ -132,8 +128,6 @@ def delete_profile(name: str) -> bool:
         path.unlink()
     if pid_path.exists():
         pid_path.unlink()
-    if get_active() == name:
-        _clear_active()
     import keyring
 
     with contextlib.suppress(Exception):
@@ -160,74 +154,16 @@ def list_profile_objects() -> list[Profile]:
     return profiles
 
 
-def set_active(name: str) -> None:
-    """Set the active profile name."""
-    _ensure_dirs()
-    ACTIVE_FILE.write_text(name)
-
-
-def get_active() -> str | None:
-    """Get the active profile name."""
-    if not ACTIVE_FILE.exists():
-        return None
-    return ACTIVE_FILE.read_text().strip() or None
-
-
-def _clear_active() -> None:
-    if ACTIVE_FILE.exists():
-        ACTIVE_FILE.unlink()
-
-
 def resolve_profile(name: str | None = None) -> Profile | None:
-    """Resolve a profile to use. Precedence: explicit name > active > single-profile auto-pick > legacy keyring > None."""
+    """Resolve a profile by explicit name only.
+
+    Agent identity is always explicit: there is no active-profile,
+    single-profile, or legacy-keyring fallback. Calling with no name returns
+    None so callers must fail loudly rather than guess.
+    """
     if name:
         return load_profile(name)
-
-    active = get_active()
-    if active:
-        return load_profile(active)
-
-    profiles = list_profiles()
-    if len(profiles) == 1:
-        return load_profile(profiles[0])
-
-    return _load_from_keyring()
-
-
-def _load_from_keyring() -> Profile | None:
-    """Legacy fallback: load the single agent from keyring."""
-    try:
-        import keyring
-
-        agent_id = keyring.get_password(KEYRING_SERVICE, KEY_AGENT_ID)
-        jwt = keyring.get_password(KEYRING_SERVICE, KEY_JWT)
-        ke_username = keyring.get_password(KEYRING_SERVICE, KEY_KE_USERNAME)
-        if agent_id:
-            return Profile(
-                agent_id=agent_id,
-                name="keyring-legacy",
-                jwt=jwt,
-                ke_username=ke_username,
-                role="standalone",
-            )
-    except Exception:
-        pass
     return None
-
-
-def _migrate_keyring_to_profile(name: str) -> Profile | None:
-    """One-time migration: move keyring credentials into a named profile.
-    
-    Does NOT delete keyring entries — that's the user's choice.
-    """
-    legacy = _load_from_keyring()
-    if not legacy:
-        return None
-    legacy.name = name
-    save_profile(legacy)
-    set_active(name)
-    logger.info("Migrated keyring agent to profile '%s'", name)
-    return legacy
 
 
 def create_profile(
@@ -274,8 +210,6 @@ def create_profile(
         profile.jwt = data["jwt"]
 
     save_profile(profile)
-    if not get_active():
-        set_active(name)
     return profile
 
 

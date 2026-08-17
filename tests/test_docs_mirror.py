@@ -291,6 +291,22 @@ def test_build_returns_none_on_invalid_repo_url(docs_token):
     assert build_docs_mirror({"docs": {"enabled": True, "repo_url": "http://nope"}}) is None
 
 
+def test_build_respects_subfolder_config(docs_token):
+    mirror = build_docs_mirror({"docs": {"enabled": True, "subfolder": "my-corpus"}})
+    assert mirror is not None
+    assert mirror.dir.name == "my-corpus"
+
+
+def test_build_rejects_unsafe_subfolder(docs_token):
+    assert build_docs_mirror({"docs": {"enabled": True, "subfolder": "../etc"}}) is None
+
+
+def test_build_defaults_subfolder_to_legal_docs(docs_token):
+    mirror = build_docs_mirror({"docs": {"enabled": True}})
+    assert mirror is not None
+    assert mirror.dir.name == "legal-docs"
+
+
 def test_keyring_key_matches_cli_convention():
     # `kidecon key add --name github-docs` stores api_key_github-docs.
     assert KEYRING_KEY == "api_key_github-docs"

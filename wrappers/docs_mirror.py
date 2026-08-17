@@ -1,8 +1,9 @@
 """Legal docs mirror — read-only git mirror of the protocol-docs corpus.
 
 Maintains a shallow, read-only local copy of the legal protocol docs repo
-(default ``kideconomy/kideconomy-protocol-docs``) inside the agent workspace
-so the comparison skill can read full documents locally while Lexor remains
+(default ``kideconomy/kideconomy-protocol-docs``) inside a named subfolder of
+the agent workspace (``docs.subfolder``, default ``legal-docs``) so the
+comparison skill can read full documents locally while Lexor remains
 the source of guidance and ground truth.
 
 Three-layer staff-only enforcement (mirrors ``wrappers/lexor_client.py``):
@@ -50,6 +51,7 @@ DEFAULT_CLONE_TIMEOUT = 120.0
 DEFAULT_FETCH_TIMEOUT = 60.0
 
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,200}$")
+_SUBFOLDER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,100}$")
 
 
 def _validate_repo_url(repo_url: str) -> None:
@@ -62,6 +64,11 @@ def _validate_repo_url(repo_url: str) -> None:
 def _validate_branch(branch: str) -> None:
     if not _BRANCH_RE.match(branch):
         raise ValueError(f"docs.branch is not a safe branch name: {branch!r}")
+
+
+def _validate_subfolder(subfolder: str) -> None:
+    if not _SUBFOLDER_RE.match(subfolder):
+        raise ValueError(f"docs.subfolder is not a safe workspace subfolder name: {subfolder!r}")
 
 
 def _default_runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess:
@@ -296,6 +303,9 @@ def build_docs_mirror(config: dict) -> DocsMirror | None:
     credential is present. Returns None otherwise so the runtime can pass None
     to CognitiveEngine and disable the mirror with zero behavior change.
 
+    ``subfolder`` names the workspace subfolder the mirror lives in (default
+    ``legal-docs``); it is validated as a safe single path segment.
+
     ``min_hub_tier`` is clamped to >= 3 (staff-only) to prevent an operator
     from silently weakening the staff-only gate via local config.
     """
@@ -305,6 +315,7 @@ def build_docs_mirror(config: dict) -> DocsMirror | None:
 
     repo_url = docs_config.get("repo_url", DEFAULT_REPO_URL)
     branch = docs_config.get("branch", DEFAULT_BRANCH)
+    subfolder = str(docs_config.get("subfolder") or DOCS_MIRROR_DIRNAME)
 
     min_hub_tier = int(docs_config.get("min_hub_tier", DEFAULT_MIN_HUB_TIER))
     if min_hub_tier < DEFAULT_MIN_HUB_TIER:
@@ -318,7 +329,13 @@ def build_docs_mirror(config: dict) -> DocsMirror | None:
         min_hub_tier = DEFAULT_MIN_HUB_TIER
 
     try:
-        mirror = DocsMirror(repo_url=repo_url, branch=branch, min_hub_tier=min_hub_tier)
+        _validate_subfolder(subfolder)
+        mirror = DocsMirror(
+            repo_url=repo_url,
+            branch=branch,
+            mirror_dir=workspace_dir() / subfolder,
+            min_hub_tier=min_hub_tier,
+        )
     except ValueError:
         logger.exception("Docs config is invalid — disabling mirror")
         return None
@@ -331,5 +348,5 @@ def build_docs_mirror(config: dict) -> DocsMirror | None:
         )
         return None
 
-    logger.info("Docs mirror ready (repo=%s, branch=%s)", repo_url, branch)
+    logger.info("Docs mirror ready (repo=%s, branch=%s, subfolder=%s)", repo_url, branch, subfolder)
     return mirror

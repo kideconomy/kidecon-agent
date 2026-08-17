@@ -29,7 +29,6 @@ from wrappers.profile_store import (
     Profile,
     create_profile,
     delete_profile,
-    get_active,
     get_log_path,
     list_profile_objects,
     list_profiles,
@@ -38,7 +37,6 @@ from wrappers.profile_store import (
     read_pid,
     resolve_profile,
     save_profile,
-    set_active,
     write_pid,
     clear_pid,
 )
@@ -49,6 +47,8 @@ logger = logging.getLogger(__name__)
 
 app = typer.Typer(help="KidEconomy Agent CLI — lifecycle management for your KidEconomy agent.")
 console = Console()
+
+_agent_override: str | None = None
 
 
 def _print_aligned_columns(headers: tuple[str, ...], rows: list[tuple]) -> None:
@@ -129,8 +129,11 @@ def main(
     ctx: typer.Context,
     no_color: bool = typer.Option(False, "--no-color", help="Disable color and rich formatting."),
     no_splash: bool = typer.Option(False, "--no-splash", help="Skip the opening animation."),
+    agent: str = typer.Option(None, "--agent", help="Act as this agent profile (default: active profile)."),
 ):
     """KidEconomy Agent CLI — lifecycle management for your KidEconomy agent."""
+    global _agent_override
+    _agent_override = agent
     _apply_no_color(no_color)
     if ctx.invoked_subcommand is None:
         _do_splash(ctx, no_splash=no_splash or no_color)
@@ -153,21 +156,36 @@ def load_config() -> dict:
 
 def hub_client() -> HubClient:
     config = load_config()
+    profile = resolve_profile(_agent_override)
+    if profile is None:
+        console.print(f"[bold red]✗[/bold red] Agent profile '{_agent_override}' not found.")
+        raise typer.Exit(code=1)
     return HubClient(
         hub_url=config["hub_url"],
         kideconomy_api_url=config.get("kideconomy_api_url", ""),
+        profile=profile,
     )
 
 
 def require_auth() -> HubClient:
-    """Guard for commands that need a registered agent.
+    """Guard for commands that need an explicit, registered agent.
 
-    Returns an authenticated HubClient or exits with an error if
-    no JWT is found in the keyring.
+    Agent identity is always explicit: commands that talk to the hub as an
+    agent must be run with ``--agent <name>``. There is no active-profile or
+    single-profile fallback.
     """
+    if not _agent_override:
+        console.print(
+            "[bold red]✗[/bold red] No agent specified. "
+            "Use [bold]--agent <name>[/bold] (see [bold]kidecon agents list[/bold])."
+        )
+        raise typer.Exit(code=1)
     client = hub_client()
     if not client.jwt:
-        console.print("[bold red]✗[/bold red] Not registered. Run [bold]kidecon agents create[/bold] first.")
+        console.print(
+            f"[bold red]✗[/bold red] Agent '{_agent_override}' has no JWT. "
+            "Run [bold]kidecon agents create[/bold] first."
+        )
         raise typer.Exit(code=1)
     return client
 
@@ -410,7 +428,7 @@ def authenticate(
 # ------------------------------------------------------------------
 @app.command()
 def start(
-    name: str = typer.Option(None, "--name", help="Agent profile name to start"),
+    name: str = typer.Option(..., "--name", help="Agent profile name to start"),
     background: bool = typer.Option(False, "--background", "-b", help="Run as background daemon"),
 ):
     """Launch Hermes — enter the long-poll loop and process incoming messages.
@@ -498,7 +516,7 @@ def _start_background(profile: Profile, config: dict) -> None:
 # ------------------------------------------------------------------
 @app.command()
 def stop(
-    name: str = typer.Option(None, "--name", help="Agent profile name to stop"),
+    name: str = typer.Option(..., "--name", help="Agent profile name to stop"),
 ):
     """Graceful shutdown — marks agent offline on hub and cleans up."""
     profile = resolve_profile(name)
@@ -523,7 +541,7 @@ def stop(
 # ------------------------------------------------------------------
 @app.command()
 def status(
-    name: str = typer.Option(None, "--name", help="Agent profile name to check"),
+    name: str = typer.Option(..., "--name", help="Agent profile name to check"),
 ):
     """Check if agent is running and connected to hub."""
     profile = resolve_profile(name)
@@ -584,7 +602,6 @@ def agents_list(
         console.print("[dim]No agent profiles found. Create one with [bold]kidecon agents create[/bold].[/dim]")
         return
 
-    active = get_active()
     config = load_config()
     hub_url = config["hub_url"]
 
@@ -595,7 +612,6 @@ def agents_list(
             continue
         pid = read_pid(profile)
         status = "running" if pid else "stopped"
-        is_active = "●" if name == active else ""
 
         agent_tier = "?"
         agent_staff = "?"
@@ -611,7 +627,7 @@ def agents_list(
         if tier is not None and str(tier) != agent_tier:
             continue
 
-        rows.append((name, profile.role, agent_tier, agent_staff, status, is_active))
+        rows.append((name, profile.role, agent_tier, agent_staff, status))
 
     if not rows:
         if tier is not None:
@@ -621,7 +637,7 @@ def agents_list(
         return
 
     _print_aligned_columns(
-        ("Name", "Role", "Tier", "Staff", "Status", "Active"),
+        ("Name", "Role", "Tier", "Staff", "Status"),
         rows,
     )
 
@@ -1139,7 +1155,7 @@ def key_list():
     table.add_column("Name")
     table.add_column("Value", overflow="fold")
 
-    profile = resolve_profile()
+    profile = resolve_profile(_agent_override)
     table.add_row("jwt", _mask(profile.jwt if profile else None))
     table.add_row("agent_id", profile.agent_id if profile else "(not set)")
     ke_user = (profile.ke_username if profile else None) or keyring.get_password(
@@ -1178,8 +1194,8 @@ def skills_discover(
     query: str = typer.Argument(None, help="Search query"),
 ):
     """Query hub skill directory."""
+    client = require_auth()
     try:
-        client = require_auth()
         results = client.discover_skills(query or "")
     except Exception as err:
         console.print(f"[bold red]✗[/bold red] Discovery failed: {err}")
@@ -1198,6 +1214,58 @@ def skills_discover(
     console.print(table)
 
 
+def _load_skill_manifest(file: str | None, inline: str | None) -> tuple[str, str, str, str, dict]:
+    """Load and validate a skill manifest from --file or --inline.
+
+    Raises ``ValueError`` with a clean, informative message on any problem —
+    missing file, unreadable file, invalid JSON, or missing required fields —
+    so callers never surface a raw traceback.
+    """
+    import json as _json
+
+    if file:
+        path = pathlib.Path(file)
+        if not path.exists():
+            raise ValueError(
+                f"skill file not found: {file!r} (searched relative to {pathlib.Path.cwd()}). "
+                f"Check the path, or generate a starter with `kidecon skills template -o {file}`."
+            )
+        try:
+            raw = path.read_text()
+        except OSError as exc:
+            raise ValueError(f"could not read skill file {file!r}: {exc}") from exc
+        source = f"file {file!r}"
+    else:
+        raw = inline or ""
+        source = "--inline"
+
+    try:
+        data = _json.loads(raw)
+    except _json.JSONDecodeError as exc:
+        raise ValueError(
+            f"{source} is not valid JSON: {exc.msg} (line {exc.lineno}, column {exc.colno})"
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise ValueError(f"{source} must contain a JSON object")
+
+    missing = [f for f in ("name", "category", "description") if not data.get(f)]
+    if missing:
+        raise ValueError(f"{source} is missing required field(s): {', '.join(missing)}")
+
+    definition = data.get("definition") or {}
+    if not isinstance(definition, dict):
+        raise ValueError(f"{source} has a non-object 'definition' field")
+
+    return (
+        str(data["name"]),
+        str(data.get("version") or "1.0.0"),
+        str(data["category"]),
+        str(data["description"]),
+        definition,
+    )
+
+
 @_skills_app.command("submit")
 def skills_submit(
     file: str = typer.Option(None, "--file", help="Path to skill JSON file"),
@@ -1212,23 +1280,13 @@ def skills_submit(
     Three modes: --file to load from JSON, --inline to pass JSON directly,
     or --name/--category/--description for interactive flags.
     """
-    import json as _json
-
-    definition = {}
-    if file:
-        data = _json.loads(pathlib.Path(file).read_text())
-        name = data["name"]
-        version = data.get("version", "1.0.0")
-        category = data["category"]
-        description = data["description"]
-        definition = data.get("definition", {})
-    elif inline:
-        data = _json.loads(inline)
-        name = data["name"]
-        version = data.get("version", "1.0.0")
-        category = data["category"]
-        description = data["description"]
-        definition = data.get("definition", {})
+    definition: dict = {}
+    if file or inline:
+        try:
+            name, version, category, description, definition = _load_skill_manifest(file, inline)
+        except ValueError as err:
+            _print_error(err, "Invalid skill manifest")
+            raise typer.Exit(code=1) from None
     else:
         if not name:
             name = typer.prompt("Skill name")
@@ -1237,8 +1295,8 @@ def skills_submit(
         if not description:
             description = typer.prompt("Description")
 
+    client = require_auth()
     try:
-        client = require_auth()
         result = client.submit_skill(name, version, category, description, definition or None)
     except Exception as err:
         console.print(f"[bold red]✗[/bold red] Submission failed: {err}")
@@ -1257,8 +1315,8 @@ def skills_mine(
     status: str = typer.Option(None, "--status", help="Filter by status (submitted, pending, live, rejected)"),
 ):
     """List my submitted skills."""
+    client = require_auth()
     try:
-        client = require_auth()
         skills = client.my_skills(status)
     except Exception as err:
         console.print(f"[bold red]✗[/bold red] Could not list skills: {err}")
@@ -1292,8 +1350,8 @@ def skills_inspect(
     skill_id: str = typer.Argument(..., help="UUID of the skill to inspect"),
 ):
     """Show full evaluation detail for a submitted skill."""
+    client = require_auth()
     try:
-        client = require_auth()
         skills = client.my_skills()
     except Exception as err:
         console.print(f"[bold red]✗[/bold red] Could not fetch skills: {err}")
@@ -1355,7 +1413,8 @@ SKILL_TEMPLATE = """{
         "slots": {"type": "array", "description": "Available time slots as ISO 8601", "items": {"type": "string"}},
         "total_count": {"type": "integer", "description": "Number of slots found"}
       }
-    }
+    },
+    "tools": ["my_local_tool", "message_user"]
   }
 }
 """
@@ -1480,7 +1539,7 @@ def doctor():
             _add("Hub", "Reachable", "fail", f"{hub_url} — {e}",
                  "Check hub_url in kidecon.yaml; is kidecon-hub running?")
 
-        profile = resolve_profile()
+        profile = resolve_profile(_agent_override)
         jwt = profile.jwt if profile else None
         if jwt:
             try:
@@ -1838,6 +1897,16 @@ def admin_skills(
             raise typer.Exit(code=1) from err
         console.print(f"[bold green]✓[/bold green] Skill {skill_id} unblocked — delivery resumed (subject to tier gating).")
 
+    elif action == "delete":
+        if not skill_id:
+            raise typer.BadParameter("--id is required for delete")
+        try:
+            result = client.admin_delete_skill(skill_id)
+        except Exception as err:
+            console.print(f"[bold red]✗[/bold red] Delete failed: {err}")
+            raise typer.Exit(code=1) from err
+        console.print(f"[bold green]✓[/bold green] Skill '{result['name']}' deleted — name is now free to resubmit.")
+
     elif action == "embed":
         console.print("[dim]Generating embeddings for all live skills...[/dim]")
         try:
@@ -1857,7 +1926,7 @@ def admin_skills(
 
     else:
         raise typer.BadParameter(
-            f"Unknown action '{action}'. Use: pending | approve | reject | embed | set-tier | block | unblock"
+            f"Unknown action '{action}'. Use: pending | approve | reject | embed | set-tier | block | unblock | delete"
         )
 
 

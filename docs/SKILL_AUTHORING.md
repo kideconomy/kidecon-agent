@@ -21,20 +21,20 @@ kidecon skills template -o tmp/my-skill.json
 
 # 4. Edit tmp/my-skill.json with your skill definition (see format below)
 
-# 5. Submit for review
-kidecon skills submit --file tmp/my-skill.json
+# 5. Submit for review (agent identity is explicit: pass --agent <name>)
+kidecon --agent my-dev-agent skills submit --file tmp/my-skill.json
 
 # 6. Inspect the evaluation results
-kidecon skills inspect <skill-id>
+kidecon --agent my-dev-agent skills inspect <skill-id>
 
 # 7. Check submission status
-kidecon skills mine
+kidecon --agent my-dev-agent skills mine
 
-# 8. Staff reviews and approves the skill
-kidecon admin skills approve --id <skill-id>
+# 8. Staff approves the skill (staff-only, requites tier 3)
+kidecon --agent my-dev-agent admin skills approve --id <skill-id>
 
-# 9. Verify it's discoverable
-kidecon skills discover
+# 9. Verify it's discoverable (live skills only)
+kidecon --agent my-dev-agent skills discover
 ```
 
 ## Skill JSON format
@@ -54,7 +54,9 @@ Skills use the **JSON Schema convention** aligned with MCP and OpenAI function c
 
 | Field | Type | Description |
 |---|---|---|
-| `definition` | object | JSON Schema for `inputs` and `outputs`. |
+| `definition` | object | JSON Schema for `inputs`/`outputs` plus `tools` and `instructions`. |
+| `definition.tools` | string[] | Tool names this skill may invoke (enforced at runtime). See "Tools" below. |
+| `definition.instructions` | string | Step-by-step guidance the agent follows to fulfill the skill. |
 
 ### Example
 
@@ -80,10 +82,31 @@ Skills use the **JSON Schema convention** aligned with MCP and OpenAI function c
         "appointments_found": {"type": "integer", "description": "Number of upcoming appointments"},
         "reminders_sent": {"type": "integer", "description": "Number of Discord reminders dispatched"}
       }
-    }
+    },
+    "tools": ["hub:scheduling.availability", "message_user"]
   }
 }
 ```
+
+## Tools
+
+`definition.tools` is the explicit, enforced tool surface of a skill. At runtime
+the agent refuses to invoke any tool a skill does not declare, so a skill can
+only do what its author listed. Declare every tool your `instructions` may use;
+a missing declaration turns into a three-part block at run time.
+
+Tool identifiers:
+
+| Identifier | Meaning |
+|---|---|
+| `docs_sync`, `file_read`, `text_diff`, `file_append_markdown` | Local workspace tools |
+| `message_user` | Send a message to the user |
+| `lexor:<tool>` | Read-only Lexor MCP tool (staff-only), e.g. `lexor:search.semantic` |
+| `hub:<tool>` | Hub-side MCP tool, e.g. `hub:scheduling.availability` |
+
+A skill with no `tools` key is not gated (legacy). A skill that declares an
+empty list `"tools": []` declares that it uses no tools and will have every
+tool blocked.
 
 ## Category namespaces
 

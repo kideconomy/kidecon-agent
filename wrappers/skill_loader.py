@@ -82,25 +82,42 @@ class SkillLoader:
         (tier 3 -> 1) cannot serve previously-fetched staff instructions from the
         cache after the agent's tier has dropped.
         """
+        cached = self._get_cached(skill_id)
+        return cached.get("instructions") if cached else None
+
+    def get_skill_tools(self, skill_id: str) -> list[str] | None:
+        """Return the skill's declared tools (``definition.tools``) or None.
+
+        None means "no tools declared", so the runtime applies no per-skill tool
+        gate. A list (possibly empty) means the skill declares an explicit tool
+        surface that the runtime must enforce.
+        """
+        cached = self._get_cached(skill_id)
+        if cached is None:
+            return None
+        return cached.get("tools")
+
+    def _get_cached(self, skill_id: str) -> dict | None:
+        """Fetch + cache the full skill payload, or None if inaccessible."""
         if skill_id not in self._cache:
             definition = self.client.get_skill(skill_id)
             if definition is None:
                 return None
             if not self._accessible(definition):
                 logger.warning(
-                    "Dropped instructions for skill %s — blocked by client-side tier/block filter",
+                    "Dropped skill %s — blocked by client-side tier/block filter",
                     skill_id,
                 )
                 return None
             self._cache[skill_id] = definition
         elif not self._accessible(self._cache[skill_id]):
             logger.warning(
-                "Evicted cached instructions for skill %s — agent tier no longer permits access",
+                "Evicted cached skill %s — agent tier no longer permits access",
                 skill_id,
             )
             del self._cache[skill_id]
             return None
-        return self._cache[skill_id].get("instructions")
+        return self._cache[skill_id]
 
     def find_skill(self, text: str) -> dict | None:
         """Match user message to a skill.

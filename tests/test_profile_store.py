@@ -79,7 +79,6 @@ class TestCreateProfileErrorMapping:
             stack.enter_context(patch("wrappers.profile_store.httpx.post", return_value=response))
             stack.enter_context(patch("wrappers.profile_store.load_profile", return_value=None))
             stack.enter_context(patch("wrappers.profile_store.save_profile"))
-            stack.enter_context(patch("wrappers.profile_store.set_active"))
             stack.enter_context(patch("wrappers.profile_store._ensure_dirs"))
             with pytest.raises(RuntimeError, match=expect_match):
                 create_profile(

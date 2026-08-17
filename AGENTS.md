@@ -14,6 +14,13 @@ Read at the start of every session. Canonical source of truth for stack, convent
 - **Sandbox** (`wrappers/sandbox.py`): isolated subprocess execution of user scripts.
 - **Logging:** Every .py file starts with `import logging; logger = logging.getLogger(__name__)`.
 
+### 2.1 Agent identity is always explicit
+- **No active profile, no single-profile auto-pick, no legacy-keyring fallback.** `resolve_profile(name)` resolves a profile by explicit name only and returns `None` when none is given. Guessing produced phantom agents (e.g. a stale profile auto-selected after another was deleted), so it is banned.
+- Hub-talking commands (`skills submit|mine|discover|inspect`, `admin ...`) require the global `--agent <name>` option. `start`/`status`/`stop` require `--name`.
+- **Auth is per-agent; authority is per-user.** Every agent has its own JWT (`sub = agent_id`, signed with its per-agent `jwt_secret`). The JWT carries no tier/role: the hub resolves `agent -> user` and reads `tier`/`is_staff` live, so promotion/demotion affects all of a user's agents instantly.
+- **Skills are owned by the `User`, not the agent.** `Skill.user_id` points at the user; `Skill.originated_from_agent_id` is provenance only. Deleting or rotating an agent never orphans a skill.
+- **Skills declare their tools (`definition.tools`) and the runtime enforces them.** The cognition loop refuses any tool a skill does not declare (`docs_sync`, `message_user`, `file_read`, `text_diff`, `file_append_markdown`, `lexor:<tool>`, `hub:<tool>`). A skill with no `tools` key is ungated (legacy); an empty `tools: []` blocks every tool.
+
 ## 3. Safety & Git Rules
 - **NO COMMITS.** Never `git commit` or `git add` unless explicitly requested.
 - **Never hardcode secrets, and never write secrets to disk.** All credentials (JWTs, API keys, KE tokens) live exclusively in the OS keyring via `keyring.set_password`. They must never be written to any file — no JSON profiles, YAML config, logs, caches, or any `write_text()`/`json.dump()`/`open()` path. Any object that holds a secret and is serialized (e.g. a `to_dict()`) MUST exclude the secret from its output. Only non-secret identifiers (`agent_id`, usernames) may be persisted to files.

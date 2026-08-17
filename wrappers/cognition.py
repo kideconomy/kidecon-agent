@@ -241,6 +241,7 @@ class Context:
     core_blocks: str = ""
     user_id: str = "default"
     skill_instructions: str | None = None
+    skill_tools: list[str] | None = None
 
 
 @dataclass
@@ -269,6 +270,37 @@ def _compact_str(obj) -> str:
         return json.dumps(obj, ensure_ascii=False, default=str)
     except (TypeError, ValueError):
         return str(obj)
+
+
+def _skill_tool_name(action: str, params: dict) -> str | None:
+    """Map a dispatch action + params to a gated tool identifier, or None.
+
+    Only tool-scoped actions are gated: ``message_user``, ``local_tool`` (by
+    ``params.name``), ``lexor_call`` (as ``lexor:<tool>``), and ``hub_call``
+    (as ``hub:<tool>``). Reasoning/memory/orchestration actions (``llm``,
+    ``memory_write``, ``recall_more``, ``delegate``, ``user_script``) are not
+    tool-scoped and return None.
+    """
+    if action == "message_user":
+        return "message_user"
+    if action == "local_tool":
+        return params.get("name", "")
+    if action == "lexor_call":
+        tool = params.get("tool", "")
+        return f"lexor:{tool}" if tool else None
+    if action == "hub_call":
+        tool = params.get("tool", "")
+        return f"hub:{tool}" if tool else None
+    return None
+
+
+def _skill_tool_block(tool_name: str) -> str:
+    """Three-part block message when a skill invokes an undeclared tool."""
+    return (
+        f"Tool '{tool_name}' was blocked. "
+        "Reason: the active skill does not declare this tool. "
+        "To proceed: revise the skill definition's `tools` list to include it."
+    )
 
 
 def _trace_touches_docs(trace: list[dict], mirror_dir=None) -> bool:
@@ -536,10 +568,12 @@ class CognitiveEngine:
         session_history = []
         user_id = "default"
         skill_instructions = None
+        skill_tools = None
         if self.skill_loader:
             matched = self.skill_loader.find_skill(text)
             if matched:
                 skill_instructions = self.skill_loader.get_skill_instructions(matched["id"])
+                skill_tools = self.skill_loader.get_skill_tools(matched["id"])
                 if skill_instructions:
                     logger.info("Matched skill '%s' for message", matched["name"])
         if source in ("discord", "discord_dm"):
@@ -560,6 +594,7 @@ class CognitiveEngine:
             core_blocks=core_blocks,
             user_id=user_id,
             skill_instructions=skill_instructions,
+            skill_tools=skill_tools,
         )
 
     def _normalize(self, text: str, tier: str) -> NormalizationResult:
@@ -741,6 +776,10 @@ class CognitiveEngine:
 
     def _dispatch_step(self, step: Step, messages: list[dict], context: Context) -> str:
         action = step.action
+        if isinstance(context.skill_tools, list):
+            tool_name = _skill_tool_name(action, step.params)
+            if tool_name is not None and tool_name not in context.skill_tools:
+                return _skill_tool_block(tool_name)
         if action == "llm":
             model = step.params.get("model", context.model)
             return self._call_llm(messages, model, context.tier)

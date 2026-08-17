@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 from wrappers import tools
 from wrappers.cognition import CognitiveEngine
 from wrappers.cognition import Step
+from wrappers.cognition import _skill_tool_name
 from wrappers.cognition import _trace_touches_docs
 from wrappers.memory import MemoryStore
 from wrappers.session import SessionStore
@@ -453,3 +454,52 @@ def test_process_with_docs_steps_runs_egress(tmp_path, monkeypatch):
     engine.client.respond_to_message.assert_called_once()
     sent_result = engine.client.respond_to_message.call_args.kwargs["result"]["text"]
     assert "securities" in sent_result
+
+
+# ------------------------------------------------------------------
+# skill tool gating (definition.tools enforcement)
+# ------------------------------------------------------------------
+def test_skill_tool_gate_blocks_undeclared_local_tool(tmp_path):
+    engine = _build_engine(tmp_path)
+    context = MagicMock()
+    context.skill_tools = ["message_user"]
+    output = engine._dispatch_step(
+        Step(action="local_tool", params={"name": "docs_sync"}),
+        messages=[],
+        context=context,
+    )
+    assert "blocked" in output
+    assert "docs_sync" in output
+
+
+def test_skill_tool_gate_allows_declared_tool(tmp_path):
+    engine = _build_engine(tmp_path)
+    context = MagicMock()
+    context.skill_tools = ["docs_sync"]
+    output = engine._dispatch_step(
+        Step(action="local_tool", params={"name": "docs_sync"}),
+        messages=[],
+        context=context,
+    )
+    assert "blocked" not in output
+
+
+def test_skill_tool_gate_skipped_when_no_tools_declared(tmp_path):
+    engine = _build_engine(tmp_path)
+    context = MagicMock()
+    context.skill_tools = None
+    output = engine._dispatch_step(
+        Step(action="local_tool", params={"name": "docs_sync"}),
+        messages=[],
+        context=context,
+    )
+    assert "blocked" not in output
+
+
+def test_skill_tool_name_maps_namespaces():
+    assert _skill_tool_name("message_user", {}) == "message_user"
+    assert _skill_tool_name("local_tool", {"name": "docs_sync"}) == "docs_sync"
+    assert _skill_tool_name("lexor_call", {"tool": "search.semantic"}) == "lexor:search.semantic"
+    assert _skill_tool_name("hub_call", {"tool": "docs.search"}) == "hub:docs.search"
+    assert _skill_tool_name("llm", {}) is None
+    assert _skill_tool_name("memory_write", {}) is None

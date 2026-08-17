@@ -333,6 +333,14 @@ class HubClient:
         response.raise_for_status()
         return response.json()
 
+    def admin_delete_skill(self, skill_id: str) -> dict:
+        response = httpx.delete(
+            f"{self.hub_url}/api/admin/skills/{skill_id}",
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
     def admin_list_agents(self) -> list[dict]:
         response = httpx.get(
             f"{self.hub_url}/api/admin/agents",

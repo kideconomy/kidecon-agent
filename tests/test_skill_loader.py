@@ -84,6 +84,35 @@ def test_get_skill_instructions_returns_none_on_404():
     assert loader.get_skill_instructions("sk-nonexistent") is None
 
 
+def test_get_skill_tools_returns_declared_tools():
+    client = _mock_client()
+    client.get_skill.return_value = {
+        "id": "sk-clickup-ticket",
+        "name": "clickup-ticket",
+        "instructions": "procedure",
+        "tools": ["message_user", "hub:clickup.create"],
+        "min_hub_tier": 0,
+        "blocked": False,
+    }
+    loader = SkillLoader(client)
+    loader._index = client.discover_skills.return_value
+    assert loader.get_skill_tools("sk-clickup-ticket") == ["message_user", "hub:clickup.create"]
+
+
+def test_get_skill_tools_returns_none_when_undeclared():
+    client = _mock_client()
+    loader = SkillLoader(client)
+    loader._index = client.discover_skills.return_value
+    assert loader.get_skill_tools("sk-clickup-ticket") is None
+
+
+def test_get_skill_tools_returns_none_on_404():
+    client = _mock_client()
+    client.get_skill.return_value = None
+    loader = SkillLoader(client)
+    assert loader.get_skill_tools("sk-nonexistent") is None
+
+
 def test_find_skill_matches_name():
     client = _mock_client()
     loader = SkillLoader(client)
