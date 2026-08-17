@@ -211,6 +211,25 @@ class HubClient:
         response.raise_for_status()
         return response.json()
 
+    def chat(self, text: str) -> str:
+        """Post a CLI chat message to this agent and return its message_id."""
+        response = httpx.post(
+            f"{self.hub_url}/api/messages/chat",
+            json={"text": text},
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return str(response.json()["message_id"])
+
+    def get_message(self, message_id: str) -> dict:
+        """Fetch one message (status + result) addressed to this agent."""
+        response = httpx.get(
+            f"{self.hub_url}/api/messages/{message_id}",
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
     def publish_skill(self, skill_card: dict) -> dict:
         return self.submit_skill(
             name=skill_card["name"],

@@ -1,9 +1,11 @@
 import logging
 import os
 import pathlib
+import re
 import signal
 import subprocess
 import sys
+import time
 import contextlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
@@ -494,11 +496,13 @@ def _start_background(profile: Profile, config: dict) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_file = open(str(log_path), "a")
 
-    agent_bin = pathlib.Path(__file__).resolve().parent.parent / ".venv" / "bin" / "kidecon"
-    if not agent_bin.exists():
-        agent_bin = pathlib.Path(sys.executable).parent / "kidecon"
+    venv_python = pathlib.Path(__file__).resolve().parent.parent / ".venv" / "bin" / "python"
+    if venv_python.exists():
+        runner = str(venv_python)
+    else:
+        runner = sys.executable
 
-    cmd = [sys.executable, "-u", "-m", "cli.kidecon", "--no-splash", "start", "--name", profile.name]
+    cmd = [runner, "-u", "-m", "cli.kidecon", "--no-splash", "start", "--name", profile.name]
     proc = subprocess.Popen(
         cmd,
         stdout=log_file,
@@ -514,26 +518,125 @@ def _start_background(profile: Profile, config: dict) -> None:
 # ------------------------------------------------------------------
 # stop
 # ------------------------------------------------------------------
+def _daemon_pids(profile: Profile) -> list[int]:
+    """Resolve the PIDs of a running agent daemon for a profile.
+
+    Uses the PID file when present and also scans the process list by command
+    line as a fallback (the PID file is not always reliable after a restart).
+    Never includes the current process.
+    """
+    pids: list[int] = []
+    stored = read_pid(profile)
+    if stored:
+        pids.append(stored)
+    try:
+        pattern = f"cli\\.kidecon.*start --name {re.escape(profile.name)}"
+        out = subprocess.run(
+            ["pgrep", "-f", pattern],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        for token in out.stdout.split():
+            try:
+                pids.append(int(token))
+            except ValueError:
+                continue
+    except Exception:
+        logger.debug("pgrep lookup failed for %s — relying on PID file", profile.name)
+    me = os.getpid()
+    return list(dict.fromkeys(p for p in pids if p and p != me))
+
+
+def _terminate(pid: int, *, hard: bool = False) -> bool:  # noqa: PLR0911 - guard-heavy process termination
+    """Terminate a process, waiting for graceful exit and escalating to SIGKILL.
+
+    Returns True when the process is gone.
+    """
+    sig = signal.SIGKILL if hard else signal.SIGTERM
+    try:
+        os.kill(pid, sig)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        console.print(f"[bold red]✗[/bold red] No permission to signal PID {pid}.")
+        return False
+    if hard:
+        return True
+    for _ in range(10):  # up to ~5s for graceful shutdown
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        time.sleep(0.5)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        console.print(f"[bold red]✗[/bold red] No permission to SIGKILL PID {pid}.")
+        return False
+    return True
+
+
 @app.command()
 def stop(
     name: str = typer.Option(..., "--name", help="Agent profile name to stop"),
+    hard: bool = typer.Option(False, "--hard", help="Force-kill (SIGKILL) without graceful shutdown"),
 ):
-    """Graceful shutdown — marks agent offline on hub and cleans up."""
+    """Stop a running agent: mark offline and terminate the daemon process.
+
+    Defaults to a graceful SIGTERM (the agent marks offline and cleans up),
+    escalating to SIGKILL if it does not exit within ~5s. Use ``--hard`` to
+    skip graceful shutdown entirely.
+    """
     profile = resolve_profile(name)
     if not profile:
         console.print("[bold red]✗[/bold red] No agent profile found.")
         raise typer.Exit(code=1)
 
-    client = HubClient(
-        hub_url=load_config()["hub_url"],
-        kideconomy_api_url=load_config().get("kideconomy_api_url", ""),
-        profile=profile,
-    )
+    # Terminate the daemon first, then mark offline. Marking offline before
+    # the kill lets the daemon's long-poll overwrite status back to "online"
+    # in the ~5s graceful window, leaving a dead-but-"online" agent on the hub.
+    pids = _daemon_pids(profile)
+    if pids:
+        for pid in pids:
+            if _terminate(pid, hard=hard):
+                console.print(f"[bold green]✓[/bold green] Stopped daemon PID {pid}.")
+            else:
+                console.print(f"[bold red]✗[/bold red] Failed to stop PID {pid}.")
+        clear_pid(profile)
+    else:
+        console.print("[dim]No running daemon found for this agent.[/dim]")
+        clear_pid(profile)
+
     try:
+        client = HubClient(
+            hub_url=load_config()["hub_url"],
+            kideconomy_api_url=load_config().get("kideconomy_api_url", ""),
+            profile=profile,
+        )
         client.update_status("offline")
         console.print(f"[bold green]✓[/bold green] Agent '{profile.name}' marked offline on hub.")
     except Exception:
         console.print("[bold yellow]⚠[/bold yellow] Could not reach hub to update status (already offline?).")
+
+
+# ------------------------------------------------------------------
+# restart
+# ------------------------------------------------------------------
+@app.command()
+def restart(
+    name: str = typer.Option(..., "--name", help="Agent profile name to restart"),
+    background: bool = typer.Option(True, "--background", help="Start back as a daemon (default)"),
+):
+    """Stop and start an agent (defaults to restarting as a background daemon)."""
+    console.print(f"[bold cyan]Restarting agent '{name}'...[/bold cyan]")
+    stop(name)
+    start(name, background=background)
 
 
 # ------------------------------------------------------------------
@@ -575,6 +678,70 @@ def status(
     console.print(f"[bold cyan]Status:[/bold cyan]      {running}", highlight=False)
     if pid:
         console.print(f"[bold cyan]PID:[/bold cyan]         {pid}")
+
+
+# ------------------------------------------------------------------
+# chat
+# ------------------------------------------------------------------
+@app.command()
+def chat(
+    text: str = typer.Argument(None, help="One-shot message. Omit to open an interactive session."),
+    timeout: float = typer.Option(120.0, "--timeout", help="Seconds to wait for a reply"),
+):
+    """Chat with this agent from the terminal.
+
+    With a message argument it sends once and prints the reply. With no
+    argument it opens an interactive two-way session (type 'exit' or Ctrl+C
+    to leave). The agent must be running (``kidecon start --name <name>``).
+    """
+    import time
+
+    client = require_auth()
+
+    def _send(text_line: str) -> None:
+        try:
+            msg_id = client.chat(text_line)
+        except Exception as err:
+            console.print(f"[bold red]✗[/bold red] Could not reach your agent: {err}")
+            return
+
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                msg = client.get_message(msg_id)
+            except Exception as err:
+                console.print(f"[bold red]✗[/bold red] Could not read reply: {err}")
+                return
+            if msg.get("status") in ("accepted", "rejected"):
+                result = msg.get("result") or {}
+                reply = result.get("text", "") if isinstance(result, dict) else str(result or "")
+                console.print(reply)
+                return
+            if time.monotonic() >= deadline:
+                console.print(
+                    "[yellow]No reply yet — the agent may be offline or still thinking.[/yellow]",
+                )
+                return
+            time.sleep(1.0)
+
+    if text:
+        _send(text)
+        return
+
+    console.print("[dim]Chatting with your agent. Type a message (or 'exit' to quit).[/dim]")
+    while True:
+        try:
+            line = typer.prompt("you", prompt_suffix="> ")
+        except (KeyboardInterrupt, EOFError):
+            console.print()
+            break
+        line = line.strip()
+        if not line:
+            continue
+        if line.lower() in ("exit", "quit"):
+            break
+        console.print("[bold cyan]agent[/bold cyan]> ", end="", highlight=False)
+        _send(line)
 
 
 # ------------------------------------------------------------------
