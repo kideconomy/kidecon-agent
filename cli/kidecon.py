@@ -242,7 +242,7 @@ def init(
                 "daily": "deepseek/deepseek-v4-flash",
                 "strong": "deepseek/deepseek-v4-pro",
                 "coding": "qwen/qwen3.7-max",
-                "safety": "meta-llama/llama-3-8b-instruct",
+                "safety": "openai/gpt-4o-mini",
             },
             "max_price": 1.0,
             "default_tier": "daily",
