@@ -7,6 +7,7 @@ than defining their own key strings or formatting names inline.
 Key namespaces (by prefix, so keys never collide and are enumerable):
   - ``hub_jwt`` / ``agent_id``        legacy single-agent (read-only fallback)
   - ``kideconomy_*``                  KidEconomy account credentials
+  - ``user_jwt``                      account-level USER JWT (no agent needed)
   - ``jwt_<agent>``                   per-agent JWT (never persisted to disk)
   - ``api_key_<provider>``            third-party API keys
 """
@@ -30,6 +31,7 @@ KEY_JWT = "hub_jwt"          # legacy single-agent JWT (fallback during migratio
 KEY_AGENT_ID = "agent_id"    # legacy single-agent agent ID
 KEY_KE_USERNAME = "kideconomy_username"
 KEY_KE_TOKEN = "kideconomy_token"
+KEY_USER_JWT = "user_jwt"    # account-level USER JWT (minted from a verified KE token)
 
 
 @dataclass(frozen=True)
@@ -134,6 +136,13 @@ ACCOUNT_KEY_SPECS: list[KeySpec] = [
         KEY_KE_TOKEN,
         "KidEconomy account token",
         required=True,
+        category="account",
+    ),
+    KeySpec(
+        KEY_USER_JWT,
+        KEY_USER_JWT,
+        "Account USER JWT — lets `status --me`/`--refresh` run without --agent",
+        optional=True,
         category="account",
     ),
 ]

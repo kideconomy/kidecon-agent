@@ -9,7 +9,10 @@ from wrappers.keys import KEY_AGENT_ID
 from wrappers.keys import KEY_JWT
 from wrappers.keys import KEY_KE_TOKEN
 from wrappers.keys import KEY_KE_USERNAME
+from wrappers.keys import KEY_USER_JWT
 from wrappers.keys import KEYRING_SERVICE
+from wrappers.keys import get as keyring_get
+from wrappers.keys import set_ as keyring_set
 
 if TYPE_CHECKING:
     from wrappers.profile_store import Profile
@@ -23,13 +26,24 @@ class HubClient:
         hub_url: str = "http://localhost:8000",
         kideconomy_api_url: str = "",
         profile: "Profile | None" = None,
+        user_jwt: str | None = None,
     ):
         self.hub_url = hub_url.rstrip("/")
         self.kideconomy_api_url = kideconomy_api_url.rstrip("/")
+        # Account-level USER JWT. When set (and no agent profile is attached),
+        # account ops authenticate as the user without needing an agent. When
+        # an explicit agent profile is attached (--agent), account ops keep
+        # using the agent JWT for compatibility.
+        self.user_jwt = user_jwt
         if profile:
             self.agent_id = profile.agent_id
             self.jwt = profile.jwt
             self._profile = profile
+        elif user_jwt:
+            # Account-only client: no agent identity is required or created.
+            self.agent_id = None
+            self.jwt = None
+            self._profile = None
         else:
             self.agent_id = self._get_or_create_agent_id()
             self.jwt = self._get_jwt()
@@ -81,6 +95,35 @@ class HubClient:
         import keyring
 
         return keyring.get_password(KEYRING_SERVICE, KEY_KE_USERNAME)
+
+    def fetch_user_jwt(self, ke_token: str) -> str:
+        """Mint a USER JWT from the hub using a verified KidEconomy DRF token.
+
+        POSTs to ``/api/user/token`` (which verifies the DRF token
+        server-to-server and upserts the User), stores the returned USER JWT
+        in the keyring under ``user_jwt``, and returns it. With this stored,
+        ``status --me`` / ``status --refresh`` authenticate as the account
+        without naming an agent.
+        """
+        if not ke_token:
+            raise RuntimeError("No KidEconomy token — run `kidecon authenticate` first.")
+        response = httpx.post(
+            f"{self.hub_url}/api/user/token",
+            json={"ke_token": ke_token},
+            timeout=15,
+        )
+        if response.status_code == 401:
+            raise RuntimeError("KidEconomy token rejected by the hub.") from None
+        response.raise_for_status()
+        token = response.json()["user_jwt"]
+        keyring_set(KEY_USER_JWT, token)
+        self.user_jwt = token
+        return token
+
+    @staticmethod
+    def get_stored_user_jwt() -> str | None:
+        """Read the stored account USER JWT from the keyring (None if unset)."""
+        return keyring_get(KEY_USER_JWT)
 
     def register(
         self,
@@ -136,6 +179,22 @@ class HubClient:
                 "Not registered. Run `kidecon authenticate` then `kidecon agents create` first."
             )
         return {"Authorization": f"Bearer {self.jwt}"}
+
+    def _account_auth_headers(self) -> dict:
+        """Auth headers for account ops (``/api/user/me`` / ``/api/user/refresh``).
+
+        Prefers the account USER JWT when no agent profile is attached (the
+        ``--agent``-less path); otherwise uses the agent JWT so an explicit
+        ``--agent`` keeps agent-JWT behavior for compatibility.
+        """
+        if not self._profile and self.user_jwt:
+            return {"Authorization": f"Bearer {self.user_jwt}"}
+        if self.jwt:
+            return {"Authorization": f"Bearer {self.jwt}"}
+        raise RuntimeError(
+            "Not authenticated. Run `kidecon authenticate` first "
+            "(then `kidecon agents create` for agent-scoped commands).",
+        )
 
     def hub_call(self, tool_name: str, params: dict) -> dict:
         response = httpx.post(
@@ -299,10 +358,12 @@ class HubClient:
 
         ``discord_user_id`` here is the authoritative "is Discord set up"
         signal on the hub — the user owns the handle, not the agent.
+        Authenticates with the stored USER JWT when no agent is named, else
+        the agent JWT (compat).
         """
         response = httpx.get(
             f"{self.hub_url}/api/user/me",
-            headers=self._auth_headers(),
+            headers=self._account_auth_headers(),
             timeout=10.0,
         )
         response.raise_for_status()
@@ -313,10 +374,12 @@ class HubClient:
 
         Returns the hub ``{"profile": ..., "refreshed": bool, "detail": ...}``
         payload so the caller can report whether KE supplied new data.
+        Authenticates with the stored USER JWT when no agent is named, else
+        the agent JWT (compat).
         """
         response = httpx.post(
             f"{self.hub_url}/api/user/refresh",
-            headers=self._auth_headers(),
+            headers=self._account_auth_headers(),
             timeout=15.0,
         )
         response.raise_for_status()
