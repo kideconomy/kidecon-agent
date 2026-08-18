@@ -57,6 +57,8 @@ Skills use the **JSON Schema convention** aligned with MCP and OpenAI function c
 | `definition` | object | JSON Schema for `inputs`/`outputs` plus `tools` and `instructions`. |
 | `definition.tools` | string[] | Tool names this skill may invoke (enforced at runtime). See "Tools" below. |
 | `definition.instructions` | string | Step-by-step guidance the agent follows to fulfill the skill. |
+| `config` | object | Optional skill configuration delivered to agents (e.g. `docs` for the docs mirror). |
+| `config.install_message` | string | Author-authored copy shown to the user right after they install the skill. When omitted, the one-line `description` is shown instead. |
 
 ### Example
 
@@ -66,6 +68,9 @@ Skills use the **JSON Schema convention** aligned with MCP and OpenAI function c
   "version": "1.0.0",
   "category": "scheduling",
   "description": "Retrieves upcoming calendar appointments for a given agent and sends reminder notifications via Discord.",
+  "config": {
+    "install_message": "You can now have Hermes watch your calendar and send you reminder notifications — just ask about your upcoming appointments."
+  },
   "definition": {
     "inputs": {
       "type": "object",

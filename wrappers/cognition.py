@@ -659,6 +659,9 @@ class CognitiveEngine:
             index_summary = self.skill_loader.get_index_summary()
             if index_summary:
                 system_tail_parts.append(index_summary)
+            available_summary = self.skill_loader.get_available_summary()
+            if available_summary:
+                system_tail_parts.append(available_summary)
         lexor_client = getattr(self, "lexor_client", None)
         if lexor_client is not None and self.agent_hub_tier >= lexor_client.min_hub_tier:
             lexor_block = _load_lexor_instructions()

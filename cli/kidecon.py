@@ -18,6 +18,8 @@ from rich.panel import Panel
 from rich.table import Table
 
 from wrappers.hub_client import HubClient
+from wrappers.installed_skills import get_installed_skills
+from wrappers.installed_skills import set_installed
 from wrappers.keys import INDEX_PATH
 from wrappers.keys import KEY_AGENT_ID
 from wrappers.keys import KEY_JWT
@@ -643,11 +645,55 @@ def restart(
 # ------------------------------------------------------------------
 # status
 # ------------------------------------------------------------------
-@app.command()
-def status(
-    name: str = typer.Option(..., "--name", help="Agent profile name to check"),
-):
-    """Check if agent is running and connected to hub."""
+def _masked(value: str | None) -> str:
+    if not value:
+        return "not linked"
+    return f"…{value[-4:]}"
+
+
+def _print_account_profile(profile: dict) -> None:
+    console.print(f"[bold cyan]KE username:[/bold cyan]  {profile.get('ke_username')}")
+    console.print(f"[bold cyan]Tier:[/bold cyan]         {profile.get('tier')}")
+    console.print(f"[bold cyan]Staff:[/bold cyan]        {'yes' if profile.get('is_staff') else 'no'}")
+    console.print(f"[bold cyan]Active:[/bold cyan]       {'yes' if profile.get('is_active') else 'no'}")
+    console.print(f"[bold cyan]Discord:[/bold cyan]      {_masked(profile.get('discord_user_id'))}")
+
+
+def _account_client() -> HubClient:
+    """Resolve the Hub client for the account view (status --me/--refresh).
+
+    Uses the explicit ``--agent`` when given. Otherwise, for a self-status
+    check, auto-uses a single local agent profile (you shouldn't have to name
+    yourself); when several profiles exist it lists them with the exact
+    command to pick, since agent identity is otherwise always explicit.
+    """
+    if _agent_override:
+        return require_auth()
+    names = list_profiles()
+    if not names:
+        console.print("[bold red]✗[/bold red] No agents set up.")
+        console.print("  Run [bold]kidecon agents create --name <name>[/bold] first.")
+        raise typer.Exit(code=1)
+    if len(names) > 1:
+        console.print("[bold yellow]⚠[/bold yellow] Several agent profiles — pick one to identify your account.")
+        for n in names:
+            console.print(f"  [bold]{n}[/bold]")
+        console.print("  Run: [bold]kidecon status --agent <name>[/bold] (or [bold]--name <agent>[/bold] for agent status)")
+        raise typer.Exit(code=1)
+    profile = resolve_profile(names[0])
+    if profile is None or not profile.jwt:
+        console.print(f"[bold red]✗[/bold red] Agent '{names[0]}' has no JWT. Run `kidecon agents create` first.")
+        raise typer.Exit(code=1)
+    config = load_config()
+    return HubClient(
+        hub_url=config["hub_url"],
+        kideconomy_api_url=config.get("kideconomy_api_url", ""),
+        profile=profile,
+    )
+
+
+def _status_agent(name: str) -> None:
+    """Current agent status (``kidecon status --name``)."""
     profile = resolve_profile(name)
     if not profile:
         console.print("[bold red]✗[/bold red] No agent profile found.")
@@ -673,12 +719,55 @@ def status(
     console.print(f"[bold cyan]Agent ID:[/bold cyan]     {profile.agent_id}")
     console.print(f"[bold cyan]Role:[/bold cyan]         {profile.role}")
     console.print(f"[bold cyan]KE user:[/bold cyan]      {profile.ke_username or '(none)'}")
-    console.print(f"[bold cyan]Registered:[/bold cyan]   yes")
+    console.print("[bold cyan]Registered:[/bold cyan]   yes")
     console.print(f"[bold cyan]Tier:[/bold cyan]        {tier_str}")
     console.print(f"[bold cyan]Hub:[/bold cyan]         {config['hub_url']}")
     console.print(f"[bold cyan]Status:[/bold cyan]      {running}", highlight=False)
     if pid:
         console.print(f"[bold cyan]PID:[/bold cyan]         {pid}")
+
+
+def _status_me(*, refresh: bool) -> None:
+    """Current account status — ``kidecon status`` / ``--me`` / ``--refresh``."""
+    client = _account_client()
+    if refresh:
+        try:
+            result = client.refresh_user()
+        except Exception as err:
+            console.print(f"[bold red]✗[/bold red] Could not refresh account: {err}")
+            raise typer.Exit(code=1) from err
+        profile = result.get("profile") or {}
+        refreshed = bool(result.get("refreshed"))
+        mark = "[bold green]✓[/bold green] refreshed" if refreshed else "[dim]unchanged[/dim]"
+        console.print(f"Account {mark}.")
+        _print_account_profile(profile)
+        if not refreshed and result.get("detail"):
+            console.print(f"[yellow]Note: {result['detail']}[/yellow]")
+        return
+    try:
+        me = client.get_user_me()
+    except Exception as err:
+        console.print(f"[bold red]✗[/bold red] Could not fetch account: {err}")
+        raise typer.Exit(code=1) from err
+    _print_account_profile(me)
+
+
+@app.command()
+def status(
+    name: str = typer.Option(None, "--name", help="Agent profile name to check (default: your account)."),
+    me: bool = typer.Option(False, "--me", help="Show your account status (default when no --name)."),
+    refresh: bool = typer.Option(False, "--refresh", help="Re-verify your account against KidEconomy and pull fresh data."),
+):
+    """Show status — your account by default, or a specific agent.
+
+    ``kidecon status`` / ``--me`` → current authenticated account profile.
+    ``kidecon status --refresh``           → re-verify the account against KidEconomy (Discord, staff, tier).
+    ``kidecon status --name <agent>``      → a specific agent's running/registration status.
+    """
+    if name:
+        _status_agent(name)
+    else:
+        _status_me(refresh=refresh)
 
 
 # ------------------------------------------------------------------
@@ -1344,7 +1433,146 @@ def skills_main(
 
 @_skills_app.command("list")
 def skills_list():
-    console.print("[dim]No skills installed yet.[/dim]")
+    """Show installed vs available (tier-accessible) skills for this agent."""
+    client = require_auth()
+    try:
+        catalog = client.discover_skills("")
+    except Exception as err:
+        console.print(f"[bold red]✗[/bold red] Discovery failed: {err}")
+        raise typer.Exit(code=1) from err
+
+    installed = get_installed_skills()
+    inst_lower = {x.lower() for x in installed}
+    installed_rows = []
+    available_rows = []
+    for s in catalog:
+        nm = (s.get("name") or "").lower()
+        sid = (s.get("id") or "").lower()
+        if nm in inst_lower or sid in inst_lower:
+            installed_rows.append(s)
+        else:
+            available_rows.append(s)
+
+    console.print(f"[bold]Installed ({len(installed_rows)})[/bold]")
+    if installed_rows:
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Name")
+        table.add_column("Version")
+        table.add_column("Category")
+        table.add_column("Description")
+        for s in installed_rows:
+            table.add_row(s["name"], s["version"], s.get("category", "uncategorized"), s.get("description", ""))
+        console.print(table)
+    else:
+        console.print("[dim]None installed. Run [bold]kidecon skills install <name>[/bold] to opt in.[/dim]")
+
+    console.print(f"\n[bold]Available ({len(available_rows)})[/bold]")
+    if available_rows:
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Name")
+        table.add_column("Version")
+        table.add_column("Category")
+        table.add_column("Description")
+        for s in available_rows:
+            table.add_row(s["name"], s["version"], s.get("category", "uncategorized"), s.get("description", ""))
+        console.print(table)
+    else:
+        console.print("[dim]No additional skills available to this agent.[/dim]")
+
+
+def _print_install_success(skill: dict) -> None:
+    """Human-readable celebration after a skill installs with no errors.
+
+    Mirrors the main ``kidecon`` splash: a pyfiglet ``slant`` banner inside a
+    green ``Panel``, followed by what the skill does and how activation works.
+    User/hub-supplied fields are markup-escaped so a skill name or description
+    can never inject rich styling.
+    """
+    from rich.markup import escape
+    from rich.text import Text
+
+    name = escape(skill.get("name") or "skill")
+    category = escape(skill.get("category") or "uncategorized")
+    description = escape(skill.get("description") or "No description provided.")
+    # The author-authored install copy travels in the skill's ``config``; it
+    # wins over the one-line description when provided.
+    config = skill.get("config") if isinstance(skill.get("config"), dict) else {}
+    install_message = config.get("install_message")
+    what_it_does = escape(str(install_message)) if install_message else description
+
+    try:
+        import pyfiglet
+
+        banner = pyfiglet.figlet_format("New Skill!", font="slant")
+    except Exception:
+        banner = "  >>  New Skill!  <<"
+    logo = Text(f"\n{banner.rstrip()}\n", style="bold green")
+    console.print(Panel(logo, border_style="green", expand=False, padding=(0, 2)))
+    console.print()
+    details = Panel(
+        f"[bold]Congratulations — you have a new skill.[/bold]\n"
+        f"\n[bold cyan]{name}[/bold cyan]  [dim]({category})[/dim]\n"
+        f"\n[bold]What it can do:[/bold]\n{what_it_does}\n"
+        "\n[dim]It's installed for all your agents. A running agent picks it "
+        "up on its next refresh; boot-time skills like 'docs-mirror' need "
+        "one restart.[/dim]",
+        border_style="green",
+        expand=False,
+    )
+    console.print(details)
+
+
+@_skills_app.command("install")
+def skills_install(
+    name: str = typer.Argument(..., help="Skill name or id to install"),
+):
+    """Install a skill for this user's agents (local opt-in, no hub write).
+
+    The name/id must exist in the tier-accessible catalog (the same list
+    ``kidecon skills discover`` returns) — a blocked, out-of-tier, or unknown
+    skill is rejected. Adds the skill's canonical name to ``installed_skills``
+    in ``kidecon.yaml``.
+    """
+    client = require_auth()
+    target = (name or "").strip()
+    if not target:
+        raise typer.BadParameter("name is required")
+    try:
+        catalog = client.discover_skills("")
+    except Exception as err:
+        console.print(f"[bold red]✗[/bold red] Discovery failed: {err}")
+        raise typer.Exit(code=1) from err
+
+    tlower = target.lower()
+    match = None
+    for s in catalog:
+        if (s.get("name") or "").lower() == tlower or (s.get("id") or "").lower() == tlower:
+            match = s
+            break
+    if match is None:
+        console.print(
+            f"[bold red]✗[/bold red] Skill '{target}' not found in the catalog "
+            "(or not tier-accessible to this agent). "
+            "Run [bold]kidecon skills discover[/bold] to see what this agent can access."
+        )
+        raise typer.Exit(code=1)
+
+    canon = match.get("name") or target
+    set_installed(canon, add=True)
+    _print_install_success(match)
+
+
+@_skills_app.command("uninstall")
+def skills_uninstall(
+    name: str = typer.Argument(..., help="Skill name to uninstall"),
+):
+    """Remove a skill from the local install set (no hub write)."""
+    target = (name or "").strip()
+    if not target:
+        raise typer.BadParameter("name is required")
+    result = set_installed(target, add=False)
+    console.print(f"[bold green]✓[/bold green] Uninstalled '[bold]{target}[/bold]'.")
+    console.print(f"[dim]Installed: {', '.join(result) if result else '(none)'}[/dim]")
 
 
 @_skills_app.command("discover")
@@ -1563,6 +1791,9 @@ SKILL_TEMPLATE = """{
   "version": "1.0.0",
   "category": "scheduling",
   "description": "Describe what this skill does in third person. Example: Retrives calendar availability for a given agent and returns upcoming time slots.",
+  "config": {
+    "install_message": "One or two sentences the user sees right after they install this skill: what it does and how to ask for it."
+  },
   "definition": {
     "inputs": {
       "type": "object",
@@ -1718,9 +1949,24 @@ def doctor():
             except Exception as e:
                 _add("Hub", "JWT", "fail", str(e),
                      "Auto-renews on next start (or run `kidecon authenticate` to refresh credentials)")
+
+            # Discord link is a user (account) attribute on the hub — poll
+            # /api/user/me for the authoritative signal rather than trusting a
+            # local copy.
+            try:
+                me = client.get_user_me()
+                discord = (me or {}).get("discord_user_id")
+                if discord:
+                    _add("Hub", "Discord", "pass", f"linked (…{str(discord)[-4:]})")
+                else:
+                    _add("Hub", "Discord", "fail", "not linked",
+                         "Link Discord to your KidEconomy account on the Hub, then run `kidecon status --refresh`")
+            except Exception as e:
+                _add("Hub", "Discord", "warn", f"unknown — {e}")
         else:
             _add("Hub", "JWT", "fail", "not set",
                  "Register with `kidecon agents create`")
+            _add("Hub", "Discord", "warn", "skipped — no JWT")
 
         agent_id = profile.agent_id if profile else None
         if agent_id:
@@ -1741,6 +1987,7 @@ def doctor():
         _add("Hub", "Reachable", "warn", "skipped (no config)", "Fix config first")
         _add("Hub", "JWT", "warn", "skipped")
         _add("Hub", "Agent ID", "warn", "skipped")
+        _add("Hub", "Discord", "warn", "skipped (no config)")
 
     for key_name, description, required in required_keys:
         v = keyring.get_password(KEYRING_SERVICE, api_key(key_name))

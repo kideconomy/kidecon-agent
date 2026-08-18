@@ -294,6 +294,34 @@ class HubClient:
         response.raise_for_status()
         return response.json()
 
+    def get_user_me(self) -> dict:
+        """Fetch the current KE user's account profile (incl. Discord link).
+
+        ``discord_user_id`` here is the authoritative "is Discord set up"
+        signal on the hub — the user owns the handle, not the agent.
+        """
+        response = httpx.get(
+            f"{self.hub_url}/api/user/me",
+            headers=self._auth_headers(),
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def refresh_user(self) -> dict:
+        """Re-verify this user against KidEconomy and pull fresh profile data.
+
+        Returns the hub ``{"profile": ..., "refreshed": bool, "detail": ...}``
+        payload so the caller can report whether KE supplied new data.
+        """
+        response = httpx.post(
+            f"{self.hub_url}/api/user/refresh",
+            headers=self._auth_headers(),
+            timeout=15.0,
+        )
+        response.raise_for_status()
+        return response.json()
+
     def admin_pending_skills(self) -> list[dict]:
         response = httpx.get(
             f"{self.hub_url}/api/admin/pending_skills",

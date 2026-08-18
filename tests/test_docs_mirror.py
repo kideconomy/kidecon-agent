@@ -324,7 +324,7 @@ def _docs_skill_loader(skill_config=None):
     client.discover_skills.return_value = [
         {
             "id": "sk-docs",
-            "name": "legal-doc-compare",
+            "name": "docs-mirror",
             "category": "documentation",
             "description": "docs mirror",
             "version": "1.0.0",
@@ -334,7 +334,7 @@ def _docs_skill_loader(skill_config=None):
     ]
     client.get_skill.return_value = {
         "id": "sk-docs",
-        "name": "legal-doc-compare",
+        "name": "docs-mirror",
         "instructions": "procedure",
         "tools": ["docs_sync"],
         "config": skill_config
@@ -343,7 +343,7 @@ def _docs_skill_loader(skill_config=None):
         "min_hub_tier": 0,
         "blocked": False,
     }
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=["docs-mirror"])
     loader.refresh()
     return loader
 
@@ -372,7 +372,7 @@ def test_build_skill_config_controls_subfolder(docs_token):
 
 def test_build_local_skill_override_wins_over_hub_defaults(docs_token):
     loader = _docs_skill_loader()
-    local = {"skills": {"legal-doc-compare": {"config": {"docs": {"branch": "release"}}}}}
+    local = {"skills": {"docs-mirror": {"config": {"docs": {"branch": "release"}}}}}
     mirror = build_docs_mirror(local, skill_loader=loader)
     assert mirror is not None
     assert mirror.branch == "release"

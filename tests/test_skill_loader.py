@@ -3,10 +3,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from wrappers.installed_skills import set_installed
 from wrappers.skill_loader import SkillLoader
 from wrappers.skill_loader import merge_skill_config
 
 logger = logging.getLogger(__name__)
+
+ALL = ["clickup-ticket", "knowledge-search"]
 
 
 def _mock_client():
@@ -37,7 +40,7 @@ def _mock_client():
 
 def test_refresh_loads_index():
     client = _mock_client()
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=ALL)
     loader.refresh()
     assert len(loader._index) == 2
     client.discover_skills.assert_called_once_with("")
@@ -45,7 +48,7 @@ def test_refresh_loads_index():
 
 def test_get_index_summary():
     client = _mock_client()
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=ALL)
     loader.refresh()
     summary = loader.get_index_summary()
     assert "## Available Skills" in summary
@@ -61,7 +64,7 @@ def test_get_index_summary_empty():
 
 def test_get_skill_instructions_lazy_loads():
     client = _mock_client()
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=ALL)
     loader._index = client.discover_skills.return_value
     instructions = loader.get_skill_instructions("sk-clickup-ticket")
     assert instructions is not None
@@ -71,7 +74,7 @@ def test_get_skill_instructions_lazy_loads():
 
 def test_get_skill_instructions_caches():
     client = _mock_client()
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=ALL)
     loader._index = client.discover_skills.return_value
     loader.get_skill_instructions("sk-clickup-ticket")
     loader.get_skill_instructions("sk-clickup-ticket")
@@ -81,7 +84,7 @@ def test_get_skill_instructions_caches():
 def test_get_skill_instructions_returns_none_on_404():
     client = _mock_client()
     client.get_skill.return_value = None
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=ALL)
     assert loader.get_skill_instructions("sk-nonexistent") is None
 
 
@@ -95,14 +98,14 @@ def test_get_skill_tools_returns_declared_tools():
         "min_hub_tier": 0,
         "blocked": False,
     }
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=["clickup-ticket"])
     loader._index = client.discover_skills.return_value
     assert loader.get_skill_tools("sk-clickup-ticket") == ["message_user", "hub:clickup.create"]
 
 
 def test_get_skill_tools_returns_none_when_undeclared():
     client = _mock_client()
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=["clickup-ticket"])
     loader._index = client.discover_skills.return_value
     assert loader.get_skill_tools("sk-clickup-ticket") is None
 
@@ -110,13 +113,13 @@ def test_get_skill_tools_returns_none_when_undeclared():
 def test_get_skill_tools_returns_none_on_404():
     client = _mock_client()
     client.get_skill.return_value = None
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=["clickup-ticket"])
     assert loader.get_skill_tools("sk-nonexistent") is None
 
 
 def test_find_skill_matches_name():
     client = _mock_client()
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=ALL)
     loader.refresh()
     result = loader.find_skill("I need to report a bug using clickup-ticket")
     assert result is not None
@@ -125,7 +128,7 @@ def test_find_skill_matches_name():
 
 def test_find_skill_no_match():
     client = _mock_client()
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=ALL)
     loader.refresh()
     result = loader.find_skill("hello, how are you?")
     assert result is None
@@ -133,7 +136,7 @@ def test_find_skill_no_match():
 
 def test_find_skill_case_insensitive():
     client = _mock_client()
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=ALL)
     loader.refresh()
     result = loader.find_skill("CLICKUP-TICKET is what I need")
     assert result is not None
@@ -143,7 +146,7 @@ def test_find_skill_case_insensitive():
 def test_refresh_logs_count(caplog):
     caplog.set_level(logging.INFO)
     client = _mock_client()
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=ALL)
     loader.refresh()
     assert "Loaded 2 skills from hub" in caplog.text
 
@@ -195,7 +198,7 @@ def _tiered_client(tier: int):
 
 def test_refresh_drops_out_of_tier_and_blocked_for_tier1():
     client = _tiered_client(1)
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=["public-skill", "staff-skill", "danger-skill"])
     loader.refresh()
     ids = {s["id"] for s in loader._index}
     assert ids == {"sk-public"}
@@ -203,7 +206,7 @@ def test_refresh_drops_out_of_tier_and_blocked_for_tier1():
 
 def test_refresh_keeps_staff_skill_for_tier3():
     client = _tiered_client(3)
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=["public-skill", "staff-skill", "danger-skill"])
     loader.refresh()
     ids = {s["id"] for s in loader._index}
     assert "sk-public" in ids
@@ -221,7 +224,7 @@ def test_get_skill_instructions_drops_out_of_tier():
         "min_hub_tier": 3,
         "blocked": False,
     }
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=["staff-skill"])
     loader._agent_tier = 1
     assert loader.get_skill_instructions("sk-staff") is None
 
@@ -235,7 +238,7 @@ def test_get_skill_instructions_drops_blocked():
         "min_hub_tier": 0,
         "blocked": True,
     }
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=["danger-skill"])
     loader._agent_tier = 3
     assert loader.get_skill_instructions("sk-danger") is None
 
@@ -249,7 +252,7 @@ def test_get_skill_instructions_keeps_accessible():
         "min_hub_tier": 0,
         "blocked": False,
     }
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=["public-skill"])
     loader._agent_tier = 1
     assert loader.get_skill_instructions("sk-public") == "public procedure"
 
@@ -257,7 +260,7 @@ def test_get_skill_instructions_keeps_accessible():
 def test_refresh_defaults_to_tier0_on_tier_lookup_failure():
     client = _tiered_client(1)
     client.get_tier.side_effect = RuntimeError("hub down")
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=["public-skill", "staff-skill", "danger-skill"])
     loader.refresh()
     # tier 0 keeps only public, drops staff + blocked
     ids = {s["id"] for s in loader._index}
@@ -278,7 +281,7 @@ def test_vector_find_drops_inaccessible_match():
             "score": 0.9,
         },
     ]
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=["staff-skill"])
     loader._agent_tier = 1
     assert loader.find_skill("I need the staff-skill") is None
 
@@ -290,7 +293,7 @@ def test_refresh_re_resolves_tier_after_promotion():
     are retained, not dropped against a stale tier-1 cache.
     """
     client = _tiered_client(1)
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=["public-skill", "staff-skill", "danger-skill"])
     loader._agent_tier = 1
     loader.refresh()
     assert "sk-staff" not in {s["id"] for s in loader._index}
@@ -314,7 +317,7 @@ def test_get_skill_instructions_evicts_cache_on_demotion():
         "min_hub_tier": 3,
         "blocked": False,
     }
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=["staff-skill"])
     loader._agent_tier = 3
     # First fetch caches the staff instructions while tier 3.
     assert loader.get_skill_instructions("sk-staff") == "secret staff procedure"
@@ -333,7 +336,7 @@ def _config_client(config=None):
     client.discover_skills.return_value = [
         {
             "id": "sk-docs",
-            "name": "legal-doc-compare",
+            "name": "docs-mirror",
             "category": "documentation",
             "description": "docs mirror",
             "version": "1.0.0",
@@ -343,7 +346,7 @@ def _config_client(config=None):
     ]
     client.get_skill.return_value = {
         "id": "sk-docs",
-        "name": "legal-doc-compare",
+        "name": "docs-mirror",
         "instructions": "procedure",
         "tools": ["docs_sync"],
         "config": config or {"docs": {"enabled": True, "branch": "main", "subfolder": "legal-docs"}},
@@ -372,7 +375,7 @@ def test_merge_skill_config_adds_new_keys():
 
 def test_get_skill_config_returns_raw_config():
     client = _config_client()
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=["docs-mirror"])
     assert loader.get_skill_config("sk-docs") == {
         "docs": {"enabled": True, "branch": "main", "subfolder": "legal-docs"},
     }
@@ -381,13 +384,13 @@ def test_get_skill_config_returns_raw_config():
 def test_get_skill_config_returns_none_on_404():
     client = MagicMock()
     client.get_skill.return_value = None
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=["docs-mirror"])
     assert loader.get_skill_config("sk-missing") is None
 
 
 def test_resolve_skill_config_returns_defaults_without_local():
     client = _config_client()
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=["docs-mirror"])
     assert loader.resolve_skill_config("sk-docs") == {
         "docs": {"enabled": True, "branch": "main", "subfolder": "legal-docs"},
     }
@@ -395,16 +398,16 @@ def test_resolve_skill_config_returns_defaults_without_local():
 
 def test_resolve_skill_config_merges_local_overrides():
     client = _config_client()
-    loader = SkillLoader(client)
-    local = {"skills": {"legal-doc-compare": {"config": {"docs": {"branch": "release"}}}}}
+    loader = SkillLoader(client, installed=["docs-mirror"])
+    local = {"skills": {"docs-mirror": {"config": {"docs": {"branch": "release"}}}}}
     resolved = loader.resolve_skill_config("sk-docs", local)
     assert resolved == {"docs": {"enabled": True, "branch": "release", "subfolder": "legal-docs"}}
 
 
 def test_resolve_skill_config_local_wins_on_leaf_values():
     client = _config_client()
-    loader = SkillLoader(client)
-    local = {"skills": {"legal-doc-compare": {"config": {"docs": {"enabled": False}}}}}
+    loader = SkillLoader(client, installed=["docs-mirror"])
+    local = {"skills": {"docs-mirror": {"config": {"docs": {"enabled": False}}}}}
     resolved = loader.resolve_skill_config("sk-docs", local)
     assert resolved["docs"]["enabled"] is False
     assert resolved["docs"]["branch"] == "main"
@@ -419,13 +422,132 @@ def test_resolve_skill_config_returns_none_without_any_config():
         "min_hub_tier": 0,
         "blocked": False,
     }
-    loader = SkillLoader(client)
+    loader = SkillLoader(client, installed=["plain-skill"])
     assert loader.resolve_skill_config("sk-noconfig") is None
 
 
 def test_find_skill_by_name_case_insensitive():
     client = _config_client()
+    loader = SkillLoader(client, installed=["docs-mirror"])
+    loader.refresh()
+    assert loader.find_skill_by_name("DOCS-MIRROR")["id"] == "sk-docs"
+    assert loader.find_skill_by_name("nonexistent") is None
+
+
+# ------------------------------------------------------------------
+# User opt-in: active index = installed ∩ tier-accessible catalog
+# ------------------------------------------------------------------
+def _catalog_client(catalog):
+    client = MagicMock()
+    client.get_tier.return_value = 3
+    client.discover_skills.return_value = catalog
+    return client
+
+
+def _cat(name, skill_id=None, tier=0):
+    return {
+        "id": skill_id or f"sk-{name}",
+        "name": name,
+        "category": "tool",
+        "description": f"desc {name}",
+        "version": "1.0.0",
+        "min_hub_tier": tier,
+        "blocked": False,
+    }
+
+
+def test_refresh_index_is_installed_intersection():
+    client = _catalog_client([_cat("alpha"), _cat("beta"), _cat("gamma")])
+    loader = SkillLoader(client, installed=["alpha", "gamma"])
+    loader.refresh()
+    assert {s["name"] for s in loader._index} == {"alpha", "gamma"}
+    # available view keeps the whole tier-accessible catalog
+    assert {s["name"] for s in loader._available} == {"alpha", "beta", "gamma"}
+
+
+def test_nothing_installed_yields_empty_index():
+    client = _catalog_client([_cat("alpha"), _cat("beta")])
+    loader = SkillLoader(client, installed=[])
+    loader.refresh()
+    assert loader._index == []
+    assert loader.get_index_summary() == ""
+    assert loader.find_skill("I need alpha") is None
+
+
+def test_non_installed_skill_never_fetched():
+    client = _catalog_client([_cat("alpha"), _cat("beta")])
+    loader = SkillLoader(client, installed=["alpha"])
+    loader.refresh()
+    # Asking for a non-installed skill must not even hit get_skill.
+    assert loader.get_skill_instructions("sk-beta") is None
+    assert loader.get_skill_tools("sk-beta") is None
+    assert loader.get_skill_config("sk-beta") is None
+    client.get_skill.assert_not_called()
+
+
+def test_non_installed_skill_not_added_to_available_summary():
+    client = _catalog_client([_cat("alpha"), _cat("beta")])
+    loader = SkillLoader(client, installed=["alpha"])
+    loader.refresh()
+    summary = loader.get_available_summary()
+    assert "alpha" not in summary
+    assert "beta" in summary
+    assert "Skills You Can Install" in summary
+
+
+def test_available_summary_empty_when_all_installed():
+    client = _catalog_client([_cat("alpha"), _cat("beta")])
+    loader = SkillLoader(client, installed=["alpha", "beta"])
+    loader.refresh()
+    assert loader.get_available_summary() == ""
+
+
+def test_available_summary_empty_when_nothing_accessible():
+    client = _catalog_client([])
+    loader = SkillLoader(client, installed=["alpha"])
+    loader.refresh()
+    assert loader.get_available_summary() == ""
+
+
+def test_vector_find_drops_non_installed_match():
+    """A high-score vector match on a non-installed skill never surfaces."""
+    client = MagicMock()
+    client.get_tier.return_value = 3
+
+    def _discover(query, *, vector=False):
+        if vector:
+            return [_cat("beta", tier=0) | {"score": 0.99}]
+        return [_cat("alpha"), _cat("beta")]
+
+    client.discover_skills.side_effect = _discover
+    loader = SkillLoader(client, installed=["alpha"])
+    loader.refresh()
+    assert loader.find_skill("I want beta please") is None
+
+
+def test_find_skill_short_circuits_when_nothing_installed():
+    client = MagicMock()
+    loader = SkillLoader(client, installed=[])
+    client.discover_skills.return_value = []
+    assert loader.find_skill("anything at all") is None
+    client.discover_skills.assert_not_called()
+
+
+def test_refresh_re_reads_installed_from_disk_without_override():
+    """With no `installed` override, refresh reads installed_skills from disk.
+
+    This is what lets a `kidecon skills install` in a separate process take
+    effect on the next refresh cycle of a running agent.
+    """
+    set_installed("clickup-ticket", add=True)
+    client = _mock_client()
     loader = SkillLoader(client)
     loader.refresh()
-    assert loader.find_skill_by_name("LEGAL-DOC-COMPARE")["id"] == "sk-docs"
-    assert loader.find_skill_by_name("nonexistent") is None
+    assert {s["name"] for s in loader._index} == {"clickup-ticket"}
+
+
+def test_installed_by_id_is_matched():
+    client = _catalog_client([_cat("beta", skill_id="sk-beta")])
+    loader = SkillLoader(client, installed=["sk-beta"])
+    loader.refresh()
+    assert {s["name"] for s in loader._index} == {"beta"}

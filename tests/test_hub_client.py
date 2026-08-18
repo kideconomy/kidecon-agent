@@ -83,6 +83,53 @@ def test_get_tier_passes_through_to_get_agent_profile():
     assert tier == 2
 
 
+def test_get_user_me_hits_hub_and_returns_discord():
+    from wrappers.hub_client import HubClient
+
+    body = {
+        "id": "user-1",
+        "ke_username": "johnny",
+        "ke_user_id": None,
+        "tier": 3,
+        "is_staff": True,
+        "is_active": True,
+        "is_local_admin": False,
+        "discord_user_id": "1234567890",
+        "last_verified_at": None,
+        "ke_disabled_at": None,
+    }
+    with patch.object(HubClient, "_auth_headers", return_value={"Authorization": "Bearer test"}):
+        with patch("wrappers.hub_client.httpx.get") as mock_get:
+            mock_get.return_value.raise_for_status = MagicMock()
+            mock_get.return_value.json.return_value = body
+            client = HubClient(hub_url="http://localhost:8000", profile=MagicMock())
+            client.jwt = "fake-jwt"
+            result = client.get_user_me()
+
+    assert result["discord_user_id"] == "1234567890"
+    assert "api/user/me" in mock_get.call_args[0][0]
+
+
+def test_refresh_user_hits_hub_and_reports_refreshed():
+    from wrappers.hub_client import HubClient
+
+    payload = {
+        "profile": {"discord_user_id": "ABCDEF", "ke_username": "johnny"},
+        "refreshed": True,
+        "detail": None,
+    }
+    with patch.object(HubClient, "_auth_headers", return_value={"Authorization": "Bearer test"}):
+        with patch("wrappers.hub_client.httpx.post") as mock_post:
+            mock_post.return_value.raise_for_status = MagicMock()
+            mock_post.return_value.json.return_value = payload
+            client = HubClient(hub_url="http://localhost:8000", profile=MagicMock())
+            client.jwt = "fake-jwt"
+            result = client.refresh_user()
+
+    assert result["refreshed"] is True
+    assert "api/user/refresh" in mock_post.call_args[0][0]
+
+
 def _mock_post_response(status_code: int, body: dict | None = None):
     response = MagicMock()
     response.status_code = status_code

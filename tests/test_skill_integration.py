@@ -59,7 +59,8 @@ def _build_skill_engine(real_factory, hub, tmp_path):
     safety = MagicMock()
     safety.check_ingress.return_value = (True, "ok")
     safety.check_egress.return_value = (True, "ok")
-    skill_loader = SkillLoader(hub)
+    catalog = hub.discover_skills("")
+    skill_loader = SkillLoader(hub, installed=[s["name"] for s in catalog])
     skill_loader.refresh()
     return CognitiveEngine(
         factory=real_factory,
@@ -106,7 +107,7 @@ class TestPromptConstruction:
         client.discover_skills.return_value = [
             {"id": "sk-test", "name": "test-skill", "category": "tool", "description": "A test skill"},
         ]
-        loader = SkillLoader(client)
+        loader = SkillLoader(client, installed=["test-skill"])
         loader.refresh()
         ctx = Context(
             text="hello", source="discord", tier="daily",
@@ -179,12 +180,14 @@ class TestSkillLoaderLiveHub:
     """Tests that verify SkillLoader works against the real hub."""
 
     def test_skill_loader_refreshes_from_real_hub(self, real_hub):
-        loader = SkillLoader(real_hub)
+        catalog = real_hub.discover_skills("")
+        loader = SkillLoader(real_hub, installed=[s["name"] for s in catalog])
         loader.refresh()
         assert len(loader._index) >= 1, "Should have at least 1 live skill"
 
     def test_get_index_summary_includes_live_skills(self, real_hub):
-        loader = SkillLoader(real_hub)
+        catalog = real_hub.discover_skills("")
+        loader = SkillLoader(real_hub, installed=[s["name"] for s in catalog])
         loader.refresh()
         summary = loader.get_index_summary()
         assert "## Available Skills" in summary
@@ -192,7 +195,8 @@ class TestSkillLoaderLiveHub:
             assert s["name"] in summary
 
     def test_find_skill_by_name_from_live_hub(self, real_hub):
-        loader = SkillLoader(real_hub)
+        catalog = real_hub.discover_skills("")
+        loader = SkillLoader(real_hub, installed=[s["name"] for s in catalog])
         loader.refresh()
         first_skill = loader._index[0]
         result = loader.find_skill(f"I want to use {first_skill['name']}")
@@ -200,13 +204,15 @@ class TestSkillLoaderLiveHub:
         assert result["name"] == first_skill["name"]
 
     def test_find_skill_no_match_from_live_hub(self, real_hub):
-        loader = SkillLoader(real_hub)
+        catalog = real_hub.discover_skills("")
+        loader = SkillLoader(real_hub, installed=[s["name"] for s in catalog])
         loader.refresh()
         result = loader.find_skill("tell me a joke about penguins")
         assert result is None
 
     def test_get_skill_instructions_from_live_hub(self, real_hub):
-        loader = SkillLoader(real_hub)
+        catalog = real_hub.discover_skills("")
+        loader = SkillLoader(real_hub, installed=[s["name"] for s in catalog])
         loader.refresh()
         first_skill = loader._index[0]
         instructions = loader.get_skill_instructions(first_skill["id"])

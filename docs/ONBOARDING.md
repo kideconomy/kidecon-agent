@@ -133,7 +133,9 @@ For `docs-mirror` (staff-only) to actually sync, the machine needs:
 kidecon key add --name github-docs --value github_pat_...
 ```
 
-and a `docs:` block (enabled, repo_url, branch, subfolder) in `kidecon.yaml`.
+and the `docs-mirror` skill installed (`kidecon skills install docs-mirror`) — its
+skill `config.docs` (enabled, repo_url, branch, subfolder, min_hub_tier) is merged
+into local settings on adoption, so no manual `docs:` block is needed in `kidecon.yaml`.
 
 ## Managing local state
 
