@@ -24,6 +24,7 @@ from wrappers.keys import INDEX_PATH
 from wrappers.keys import KEY_AGENT_ID
 from wrappers.keys import KEY_JWT
 from wrappers.keys import KEY_KE_USERNAME
+from wrappers.keys import KEY_USER_JWT
 from wrappers.keys import KEYRING_SERVICE
 from wrappers.keys import api_key
 from wrappers.keys import enumerate_keys
@@ -413,18 +414,30 @@ def authenticate(
     password = getpass.getpass("KidEconomy password: ")
 
     console.print(f"[dim]Authenticating against KidEconomy ({ke_api_url})...[/dim]")
+    client = HubClient(
+        hub_url=hub_url,
+        kideconomy_api_url=ke_api_url,
+    )
     try:
-        HubClient(
-            hub_url=hub_url,
-            kideconomy_api_url=ke_api_url,
-        ).fetch_ke_token(ke_username, password)
+        ke_token = client.fetch_ke_token(ke_username, password)
     except Exception as err:
         _print_error(err, "KidEconomy authentication failed")
         raise typer.Exit(code=1) from err
     finally:
         del password
 
-    console.print(f"[bold green]✓[/bold green] Authenticated as {ke_username}.")
+    # Mint an account-level USER JWT so `status --me`/`--refresh` work without
+    # `--agent`. Best-effort: KE login already succeeded, so a hub-side hiccup
+    # must not fail the whole authenticate (the agent-JWT path still works).
+    try:
+        client.fetch_user_jwt(ke_token)
+        console.print(f"[bold green]✓[/bold green] Authenticated as {ke_username}.")
+        console.print("[dim]Account token stored — `kidecon status --me` works without --agent.[/dim]")
+    except Exception as err:
+        _print_error(err, "Could not mint account token from the hub")
+        console.print(f"[bold green]✓[/bold green] Authenticated as {ke_username}.")
+        console.print("[dim]Account status will use an agent JWT — run [bold]kidecon status --agent <name>[/bold].[/dim]")
+
     console.print("[dim]Next: [bold]kidecon agents create --name <name> --role standalone[/bold][/dim]")
 
 
@@ -659,20 +672,56 @@ def _print_account_profile(profile: dict) -> None:
     console.print(f"[bold cyan]Discord:[/bold cyan]      {_masked(profile.get('discord_user_id'))}")
 
 
-def _account_client() -> HubClient:
+def _client_for_profile(profile: Profile) -> HubClient:
+    config = load_config()
+    return HubClient(
+        hub_url=config["hub_url"],
+        kideconomy_api_url=config.get("kideconomy_api_url", ""),
+        profile=profile,
+    )
+
+
+def _stored_user_jwt() -> str | None:
+    """Read the stored account USER JWT, if any (None when unset/unavailable)."""
+    from wrappers.keys import get as keyring_get
+
+    return keyring_get(KEY_USER_JWT)
+
+
+def _account_client(agent: str | None = None) -> HubClient:
     """Resolve the Hub client for the account view (status --me/--refresh).
 
-    Uses the explicit ``--agent`` when given. Otherwise, for a self-status
-    check, auto-uses a single local agent profile (you shouldn't have to name
-    yourself); when several profiles exist it lists them with the exact
-    command to pick, since agent identity is otherwise always explicit.
+    Accepts an explicit ``agent`` from ``status --agent`` first; otherwise the
+    global ``--agent``. If neither is given, a self-status check prefers the
+    stored account USER JWT (so you never have to name an agent to view your
+    own account); when no USER JWT is stored it falls back to a single local
+    agent profile, and when several profiles exist it lists them with the
+    exact command to pick.
     """
-    if _agent_override:
-        return require_auth()
+    identity = (agent or "").strip() or _agent_override
+    if identity:
+        profile = resolve_profile(identity)
+        if profile is None:
+            console.print(f"[bold red]✗[/bold red] No agent profile '{identity}' found.")
+            raise typer.Exit(code=1)
+        client = _client_for_profile(profile)
+        if not client.jwt:
+            console.print(f"[bold red]✗[/bold red] Agent '{identity}' has no JWT. Run `kidecon agents create` first.")
+            raise typer.Exit(code=1)
+        return client
+    # No --agent: authenticate as the account (USER JWT) when available.
+    user_jwt = _stored_user_jwt()
+    if user_jwt:
+        config = load_config()
+        return HubClient(
+            hub_url=config["hub_url"],
+            kideconomy_api_url=config.get("kideconomy_api_url", ""),
+            user_jwt=user_jwt,
+        )
     names = list_profiles()
     if not names:
         console.print("[bold red]✗[/bold red] No agents set up.")
-        console.print("  Run [bold]kidecon agents create --name <name>[/bold] first.")
+        console.print("  Run [bold]kidecon authenticate[/bold] (then [bold]kidecon agents create[/bold]) first.")
         raise typer.Exit(code=1)
     if len(names) > 1:
         console.print("[bold yellow]⚠[/bold yellow] Several agent profiles — pick one to identify your account.")
@@ -684,12 +733,7 @@ def _account_client() -> HubClient:
     if profile is None or not profile.jwt:
         console.print(f"[bold red]✗[/bold red] Agent '{names[0]}' has no JWT. Run `kidecon agents create` first.")
         raise typer.Exit(code=1)
-    config = load_config()
-    return HubClient(
-        hub_url=config["hub_url"],
-        kideconomy_api_url=config.get("kideconomy_api_url", ""),
-        profile=profile,
-    )
+    return _client_for_profile(profile)
 
 
 def _status_agent(name: str) -> None:
@@ -727,9 +771,9 @@ def _status_agent(name: str) -> None:
         console.print(f"[bold cyan]PID:[/bold cyan]         {pid}")
 
 
-def _status_me(*, refresh: bool) -> None:
+def _status_me(*, refresh: bool, agent: str | None = None) -> None:
     """Current account status — ``kidecon status`` / ``--me`` / ``--refresh``."""
-    client = _account_client()
+    client = _account_client(agent=agent)
     if refresh:
         try:
             result = client.refresh_user()
@@ -754,20 +798,21 @@ def _status_me(*, refresh: bool) -> None:
 
 @app.command()
 def status(
-    name: str = typer.Option(None, "--name", help="Agent profile name to check (default: your account)."),
+    name: str = typer.Option(None, "--name", help="Agent profile name to check (per-agent status)."),
+    agent: str = typer.Option(None, "--agent", help="Agent identity for the account view (no global --agent needed)."),
     me: bool = typer.Option(False, "--me", help="Show your account status (default when no --name)."),
     refresh: bool = typer.Option(False, "--refresh", help="Re-verify your account against KidEconomy and pull fresh data."),
 ):
     """Show status — your account by default, or a specific agent.
 
-    ``kidecon status`` / ``--me`` → current authenticated account profile.
-    ``kidecon status --refresh``           → re-verify the account against KidEconomy (Discord, staff, tier).
-    ``kidecon status --name <agent>``      → a specific agent's running/registration status.
+    ``kidecon status`` / ``--me``            → current authenticated account profile.
+    ``kidecon status --agent <name> --refresh`` → re-verify that account against KidEconomy (Discord, staff, tier).
+    ``kidecon status --name <agent>``        → that agent's running/registration status.
     """
     if name:
         _status_agent(name)
     else:
-        _status_me(refresh=refresh)
+        _status_me(refresh=refresh, agent=agent)
 
 
 # ------------------------------------------------------------------
@@ -1027,7 +1072,7 @@ def panic(
     try:
         cleared = 0
         # Clear the 3 well-known internal keys
-        for key in [KEY_JWT, KEY_AGENT_ID, KEY_KE_USERNAME]:
+        for key in [KEY_JWT, KEY_AGENT_ID, KEY_KE_USERNAME, KEY_USER_JWT]:
             try:
                 existing = keyring.get_password(KEYRING_SERVICE, key)
                 if existing:

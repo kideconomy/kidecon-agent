@@ -98,7 +98,7 @@ def test_get_user_me_hits_hub_and_returns_discord():
         "last_verified_at": None,
         "ke_disabled_at": None,
     }
-    with patch.object(HubClient, "_auth_headers", return_value={"Authorization": "Bearer test"}):
+    with patch.object(HubClient, "_account_auth_headers", return_value={"Authorization": "Bearer test"}):
         with patch("wrappers.hub_client.httpx.get") as mock_get:
             mock_get.return_value.raise_for_status = MagicMock()
             mock_get.return_value.json.return_value = body
@@ -118,7 +118,7 @@ def test_refresh_user_hits_hub_and_reports_refreshed():
         "refreshed": True,
         "detail": None,
     }
-    with patch.object(HubClient, "_auth_headers", return_value={"Authorization": "Bearer test"}):
+    with patch.object(HubClient, "_account_auth_headers", return_value={"Authorization": "Bearer test"}):
         with patch("wrappers.hub_client.httpx.post") as mock_post:
             mock_post.return_value.raise_for_status = MagicMock()
             mock_post.return_value.json.return_value = payload
@@ -128,6 +128,73 @@ def test_refresh_user_hits_hub_and_reports_refreshed():
 
     assert result["refreshed"] is True
     assert "api/user/refresh" in mock_post.call_args[0][0]
+
+
+def test_account_auth_headers_prefers_user_jwt_without_profile():
+    from wrappers.hub_client import HubClient
+
+    client = HubClient(hub_url="http://localhost:8000", user_jwt="user-jwt-123")
+    assert client._profile is None
+    assert client.jwt is None
+    headers = client._account_auth_headers()
+    assert headers == {"Authorization": "Bearer user-jwt-123"}
+
+
+def test_account_auth_headers_uses_agent_jwt_when_profile_attached():
+    from wrappers.hub_client import HubClient
+
+    prof = MagicMock()
+    client = HubClient(hub_url="http://localhost:8000", profile=prof, user_jwt="user-jwt-123")
+    client.jwt = "agent-jwt-456"
+    # An explicit agent profile keeps agent-JWT behavior (--agent compat).
+    headers = client._account_auth_headers()
+    assert headers == {"Authorization": "Bearer agent-jwt-456"}
+
+
+def test_account_auth_headers_falls_back_to_agent_jwt_when_no_user_jwt():
+    from wrappers.hub_client import HubClient
+
+    client = HubClient(hub_url="http://localhost:8000")
+    client.jwt = "agent-jwt-789"
+    headers = client._account_auth_headers()
+    assert headers == {"Authorization": "Bearer agent-jwt-789"}
+
+
+def test_fetch_user_jwt_posts_and_stores_token(monkeypatch):
+    from wrappers.hub_client import HubClient
+
+    captured = {}
+
+    def fake_set(key, value):
+        captured[key] = value
+
+    response = MagicMock()
+    response.status_code = 200
+    response.raise_for_status = MagicMock()
+    response.json.return_value = {"user_jwt": "minted-user-jwt", "profile": {"ke_username": "johnny"}}
+
+    monkeypatch.setattr("wrappers.hub_client.keyring_set", fake_set)
+    with patch("wrappers.hub_client.httpx.post", return_value=response) as mock_post:
+        client = HubClient(hub_url="http://localhost:8000")
+        token = client.fetch_user_jwt("drf-token")
+
+    assert token == "minted-user-jwt"
+    assert client.user_jwt == "minted-user-jwt"
+    assert captured.get("user_jwt") == "minted-user-jwt"
+    posted = mock_post.call_args
+    assert "api/user/token" in posted.args[0]
+    assert posted.kwargs["json"] == {"ke_token": "drf-token"}
+
+
+def test_fetch_user_jwt_raises_on_401():
+    from wrappers.hub_client import HubClient
+
+    response = MagicMock()
+    response.status_code = 401
+    with patch("wrappers.hub_client.httpx.post", return_value=response):
+        client = HubClient(hub_url="http://localhost:8000")
+        with pytest.raises(RuntimeError, match="KidEconomy token rejected"):
+            client.fetch_user_jwt("bogus")
 
 
 def _mock_post_response(status_code: int, body: dict | None = None):
