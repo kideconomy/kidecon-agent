@@ -237,6 +237,7 @@ class HubClient:
             category=skill_card.get("category", "unknown"),
             description=skill_card.get("description", ""),
             definition=skill_card.get("definition"),
+            config=skill_card.get("config"),
         )
 
     def discover_skills(self, query: str, vector: bool = False) -> list[dict]:
@@ -426,16 +427,20 @@ class HubClient:
         category: str,
         description: str,
         definition: dict | None = None,
+        config: dict | None = None,
     ) -> dict:
+        payload: dict = {
+            "name": name,
+            "version": version,
+            "category": category,
+            "description": description,
+            "definition": definition or {},
+        }
+        if config is not None:
+            payload["config"] = config
         response = httpx.post(
             f"{self.hub_url}/api/skills",
-            json={
-                "name": name,
-                "version": version,
-                "category": category,
-                "description": description,
-                "definition": definition or {},
-            },
+            json=payload,
             headers=self._auth_headers(),
         )
         response.raise_for_status()

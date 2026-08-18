@@ -3,6 +3,23 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def merge_skill_config(defaults: dict, overrides: dict) -> dict:
+    """Deep-merge per-skill config defaults with local overrides.
+
+    Local explicit values (``kidecon.yaml``) win over skill defaults. Nested
+    dicts are merged recursively; non-dict values (and keys present only in
+    ``overrides``) replace outright. Returns a new dict — neither input is
+    mutated.
+    """
+    merged = dict(defaults)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = merge_skill_config(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 class SkillLoader:
     """Fetches skills from hub, caches them, and matches user messages to skills."""
 
@@ -96,6 +113,55 @@ class SkillLoader:
         if cached is None:
             return None
         return cached.get("tools")
+
+    def get_skill_config(self, skill_id: str) -> dict | None:
+        """Return the skill's delivered ``config`` defaults, or None.
+
+        The config travels with the skill payload from discovery/get_skill. It
+        is retained verbatim (already scrubbed for this agent's tier by the
+        hub) — no merge is applied here. Use :meth:`resolve_skill_config` for
+        the merged (local-overrides-win) view.
+        """
+        cached = self._get_cached(skill_id)
+        if cached is None:
+            return None
+        return cached.get("config")
+
+    def resolve_skill_config(self, skill_id: str, local_config: dict | None = None) -> dict | None:
+        """Return the skill's config merged with local ``kidecon.yaml`` overrides.
+
+        Local overrides live under ``skills.<skill_name>.config`` (see the
+        clickup-ticket handler). Explicit local values win over skill defaults.
+        Returns None when the skill is inaccessible or carries no config and no
+        local override exists — preserving the current "no config = no merge"
+        behavior.
+        """
+        cached = self._get_cached(skill_id)
+        if cached is None:
+            return None
+        defaults = cached.get("config")
+        overrides = self._local_overrides(cached.get("name", ""), local_config)
+        if not isinstance(defaults, dict):
+            return overrides or None
+        if not overrides:
+            return defaults
+        return merge_skill_config(defaults, overrides)
+
+    @staticmethod
+    def _local_overrides(skill_name: str, local_config: dict | None) -> dict:
+        if not local_config or not skill_name:
+            return {}
+        skill_entry = (local_config.get("skills") or {}).get(skill_name) or {}
+        override_config = skill_entry.get("config")
+        return override_config if isinstance(override_config, dict) else {}
+
+    def find_skill_by_name(self, name: str) -> dict | None:
+        """Return the index entry for a skill by (case-insensitive) name, or None."""
+        target = (name or "").lower()
+        for skill in self._index:
+            if (skill.get("name") or "").lower() == target:
+                return skill
+        return None
 
     def _get_cached(self, skill_id: str) -> dict | None:
         """Fetch + cache the full skill payload, or None if inaccessible."""

@@ -8,6 +8,7 @@ validation, and build_docs_mirror enablement rules.
 
 import logging
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import keyring
 import pytest
@@ -17,6 +18,7 @@ from wrappers.docs_mirror import KEYRING_KEY
 from wrappers.docs_mirror import DocsMirror
 from wrappers.docs_mirror import build_docs_mirror
 from wrappers.hub_client import KEYRING_SERVICE
+from wrappers.skill_loader import SkillLoader
 
 logger = logging.getLogger(__name__)
 
@@ -311,3 +313,91 @@ def test_keyring_key_matches_cli_convention():
     # `kidecon key add --name github-docs` stores api_key_github-docs.
     assert KEYRING_KEY == "api_key_github-docs"
     assert KEYRING_SERVICE == "kidecon-agent"
+
+
+# ------------------------------------------------------------------
+# build_docs_mirror: skill-scoped config resolution
+# ------------------------------------------------------------------
+def _docs_skill_loader(skill_config=None):
+    client = MagicMock()
+    client.get_tier.return_value = 3
+    client.discover_skills.return_value = [
+        {
+            "id": "sk-docs",
+            "name": "legal-doc-compare",
+            "category": "documentation",
+            "description": "docs mirror",
+            "version": "1.0.0",
+            "min_hub_tier": 0,
+            "blocked": False,
+        },
+    ]
+    client.get_skill.return_value = {
+        "id": "sk-docs",
+        "name": "legal-doc-compare",
+        "instructions": "procedure",
+        "tools": ["docs_sync"],
+        "config": skill_config
+        if skill_config is not None
+        else {"docs": {"enabled": True, "branch": "main", "subfolder": "legal-docs"}},
+        "min_hub_tier": 0,
+        "blocked": False,
+    }
+    loader = SkillLoader(client)
+    loader.refresh()
+    return loader
+
+
+def test_build_resolves_from_skill_config(docs_token):
+    loader = _docs_skill_loader()
+    mirror = build_docs_mirror({}, skill_loader=loader)
+    assert mirror is not None
+    assert mirror.branch == "main"
+    assert mirror.repo_url == DEFAULT_REPO_URL
+
+
+def test_build_global_docs_overrides_skill_defaults(docs_token):
+    loader = _docs_skill_loader()
+    mirror = build_docs_mirror({"docs": {"enabled": True, "branch": "release"}}, skill_loader=loader)
+    assert mirror is not None
+    assert mirror.branch == "release"
+
+
+def test_build_skill_config_controls_subfolder(docs_token):
+    loader = _docs_skill_loader({"docs": {"enabled": True, "subfolder": "my-corpus"}})
+    mirror = build_docs_mirror({}, skill_loader=loader)
+    assert mirror is not None
+    assert mirror.dir.name == "my-corpus"
+
+
+def test_build_local_skill_override_wins_over_hub_defaults(docs_token):
+    loader = _docs_skill_loader()
+    local = {"skills": {"legal-doc-compare": {"config": {"docs": {"branch": "release"}}}}}
+    mirror = build_docs_mirror(local, skill_loader=loader)
+    assert mirror is not None
+    assert mirror.branch == "release"
+
+
+def test_build_falls_back_to_global_when_skill_missing(docs_token):
+    loader = _docs_skill_loader()
+    loader._index = []
+    mirror = build_docs_mirror({"docs": {"enabled": True, "branch": "legacy"}}, skill_loader=loader)
+    assert mirror is not None
+    assert mirror.branch == "legacy"
+
+
+def test_build_falls_back_to_global_when_skill_has_no_docs(docs_token):
+    loader = _docs_skill_loader({"other": "settings"})
+    mirror = build_docs_mirror({"docs": {"enabled": True}}, skill_loader=loader)
+    assert mirror is not None
+    assert mirror.branch == "main"
+
+
+def test_build_returns_none_when_skill_docs_disabled(docs_token):
+    loader = _docs_skill_loader({"docs": {"enabled": False}})
+    assert build_docs_mirror({}, skill_loader=loader) is None
+
+
+def test_build_skill_config_still_requires_credential(no_token):
+    loader = _docs_skill_loader()
+    assert build_docs_mirror({}, skill_loader=loader) is None

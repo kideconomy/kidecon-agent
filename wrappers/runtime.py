@@ -102,7 +102,7 @@ def _build_engine(client: "HubClient", config: dict, is_orchestrator: bool = Fal
     try:
         from wrappers.docs_mirror import build_docs_mirror
 
-        docs_mirror = build_docs_mirror(config)
+        docs_mirror = build_docs_mirror(config, skill_loader=skill_loader)
     except Exception:
         logger.exception("Docs mirror build failed — continuing without the local corpus")
     if docs_mirror is not None:

@@ -1372,7 +1372,7 @@ def skills_discover(
     console.print(table)
 
 
-def _load_skill_manifest(file: str | None, inline: str | None) -> tuple[str, str, str, str, dict]:
+def _load_skill_manifest(file: str | None, inline: str | None) -> tuple[str, str, str, str, dict, dict | None]:
     """Load and validate a skill manifest from --file or --inline.
 
     Raises ``ValueError`` with a clean, informative message on any problem —
@@ -1415,12 +1415,19 @@ def _load_skill_manifest(file: str | None, inline: str | None) -> tuple[str, str
     if not isinstance(definition, dict):
         raise ValueError(f"{source} has a non-object 'definition' field")
 
+    config = data.get("config")
+    if config is None:
+        config = definition.get("config")
+    if config is not None and not isinstance(config, dict):
+        raise ValueError(f"{source} has a non-object 'config' field")
+
     return (
         str(data["name"]),
         str(data.get("version") or "1.0.0"),
         str(data["category"]),
         str(data["description"]),
         definition,
+        config,
     )
 
 
@@ -1439,9 +1446,10 @@ def skills_submit(
     or --name/--category/--description for interactive flags.
     """
     definition: dict = {}
+    config: dict | None = None
     if file or inline:
         try:
-            name, version, category, description, definition = _load_skill_manifest(file, inline)
+            name, version, category, description, definition, config = _load_skill_manifest(file, inline)
         except ValueError as err:
             _print_error(err, "Invalid skill manifest")
             raise typer.Exit(code=1) from None
@@ -1455,7 +1463,7 @@ def skills_submit(
 
     client = require_auth()
     try:
-        result = client.submit_skill(name, version, category, description, definition or None)
+        result = client.submit_skill(name, version, category, description, definition or None, config)
     except Exception as err:
         console.print(f"[bold red]✗[/bold red] Submission failed: {err}")
         raise typer.Exit(code=1) from err

@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from wrappers.skill_loader import SkillLoader
+from wrappers.skill_loader import merge_skill_config
 
 logger = logging.getLogger(__name__)
 
@@ -322,3 +323,109 @@ def test_get_skill_instructions_evicts_cache_on_demotion():
     loader._agent_tier = 1
     assert loader.get_skill_instructions("sk-staff") is None
     assert "sk-staff" not in loader._cache
+
+
+# ------------------------------------------------------------------
+# Per-skill config: retention, merge, and resolution
+# ------------------------------------------------------------------
+def _config_client(config=None):
+    client = MagicMock()
+    client.discover_skills.return_value = [
+        {
+            "id": "sk-docs",
+            "name": "legal-doc-compare",
+            "category": "documentation",
+            "description": "docs mirror",
+            "version": "1.0.0",
+            "min_hub_tier": 0,
+            "blocked": False,
+        },
+    ]
+    client.get_skill.return_value = {
+        "id": "sk-docs",
+        "name": "legal-doc-compare",
+        "instructions": "procedure",
+        "tools": ["docs_sync"],
+        "config": config or {"docs": {"enabled": True, "branch": "main", "subfolder": "legal-docs"}},
+        "min_hub_tier": 0,
+        "blocked": False,
+    }
+    return client
+
+
+def test_merge_skill_config_deep_merges_nested():
+    defaults = {"docs": {"enabled": True, "branch": "main"}, "timeout": 15}
+    overrides = {"docs": {"branch": "release"}, "timeout": 30}
+    merged = merge_skill_config(defaults, overrides)
+    assert merged == {"docs": {"enabled": True, "branch": "release"}, "timeout": 30}
+    # inputs are not mutated
+    assert defaults == {"docs": {"enabled": True, "branch": "main"}, "timeout": 15}
+
+
+def test_merge_skill_config_non_dict_override_replaces():
+    assert merge_skill_config({"docs": {"x": 1}}, {"docs": "flat"}) == {"docs": "flat"}
+
+
+def test_merge_skill_config_adds_new_keys():
+    assert merge_skill_config({"a": 1}, {"b": 2}) == {"a": 1, "b": 2}
+
+
+def test_get_skill_config_returns_raw_config():
+    client = _config_client()
+    loader = SkillLoader(client)
+    assert loader.get_skill_config("sk-docs") == {
+        "docs": {"enabled": True, "branch": "main", "subfolder": "legal-docs"},
+    }
+
+
+def test_get_skill_config_returns_none_on_404():
+    client = MagicMock()
+    client.get_skill.return_value = None
+    loader = SkillLoader(client)
+    assert loader.get_skill_config("sk-missing") is None
+
+
+def test_resolve_skill_config_returns_defaults_without_local():
+    client = _config_client()
+    loader = SkillLoader(client)
+    assert loader.resolve_skill_config("sk-docs") == {
+        "docs": {"enabled": True, "branch": "main", "subfolder": "legal-docs"},
+    }
+
+
+def test_resolve_skill_config_merges_local_overrides():
+    client = _config_client()
+    loader = SkillLoader(client)
+    local = {"skills": {"legal-doc-compare": {"config": {"docs": {"branch": "release"}}}}}
+    resolved = loader.resolve_skill_config("sk-docs", local)
+    assert resolved == {"docs": {"enabled": True, "branch": "release", "subfolder": "legal-docs"}}
+
+
+def test_resolve_skill_config_local_wins_on_leaf_values():
+    client = _config_client()
+    loader = SkillLoader(client)
+    local = {"skills": {"legal-doc-compare": {"config": {"docs": {"enabled": False}}}}}
+    resolved = loader.resolve_skill_config("sk-docs", local)
+    assert resolved["docs"]["enabled"] is False
+    assert resolved["docs"]["branch"] == "main"
+
+
+def test_resolve_skill_config_returns_none_without_any_config():
+    client = MagicMock()
+    client.get_skill.return_value = {
+        "id": "sk-noconfig",
+        "name": "plain-skill",
+        "instructions": "x",
+        "min_hub_tier": 0,
+        "blocked": False,
+    }
+    loader = SkillLoader(client)
+    assert loader.resolve_skill_config("sk-noconfig") is None
+
+
+def test_find_skill_by_name_case_insensitive():
+    client = _config_client()
+    loader = SkillLoader(client)
+    loader.refresh()
+    assert loader.find_skill_by_name("LEGAL-DOC-COMPARE")["id"] == "sk-docs"
+    assert loader.find_skill_by_name("nonexistent") is None

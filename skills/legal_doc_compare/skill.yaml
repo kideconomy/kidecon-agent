@@ -14,7 +14,15 @@ permissions:
   network: true
 config:
   docs:
-    default: {}
+    default:
+      enabled: true
+      repo_url: https://github.com/kideconomy/kideconomy-protocol-docs.git
+      branch: main
+      subfolder: legal-docs
+      min_hub_tier: 3
     description: >-
-      Mirror settings live under the top-level `docs` block of kidecon.yaml
-      (enabled, repo_url, branch). See wrappers/docs_mirror.py.
+      Read-only local mirror settings, delivered with this skill. The mirror
+      provisions when enabled is true and a `github-docs` keyring PAT is
+      present; min_hub_tier is clamped to >= 3 (staff-only). Local overrides
+      under skills.legal_doc_compare.config.docs (or the legacy top-level
+      `docs` block) win over these defaults.

@@ -44,6 +44,11 @@ KEYRING_KEY = api_key("github-docs")
 
 DOCS_MIRROR_DIRNAME = "legal-docs"
 
+# The hub skill whose ``config.docs`` carries the mirror settings. Discovered
+# skills are matched by name; a skill without this name (or without a ``docs``
+# config) falls back to the legacy global ``docs:`` block.
+DOCS_SKILL_NAME = "docs-mirror"
+
 DEFAULT_REPO_URL = "https://github.com/kideconomy/kideconomy-protocol-docs.git"
 DEFAULT_BRANCH = "main"
 DEFAULT_MIN_HUB_TIER = 3
@@ -296,10 +301,36 @@ class DocsMirror:
         return f"{what} Reason: {why} To proceed: {next_step}"
 
 
-def build_docs_mirror(config: dict) -> DocsMirror | None:
+def _docs_skill_config(config: dict, skill_loader) -> dict | None:
+    """Resolve the docs-mirror skill's merged ``config.docs``, or None.
+
+    Duck-typed on ``skill_loader`` (a ``SkillLoader``): finds the docs-mirror
+    skill by name, merges its hub config with local ``skills.<name>.config``
+    overrides, and returns the ``docs`` sub-dict when present.
+    """
+    if skill_loader is None:
+        return None
+    skill = skill_loader.find_skill_by_name(DOCS_SKILL_NAME)
+    if skill is None:
+        return None
+    resolved = skill_loader.resolve_skill_config(skill["id"], config)
+    if not isinstance(resolved, dict):
+        return None
+    docs = resolved.get("docs")
+    return docs if isinstance(docs, dict) else None
+
+
+def build_docs_mirror(config: dict, skill_loader=None) -> DocsMirror | None:
     """Construct a DocsMirror from agent config, or None when disabled.
 
-    Enabled only when ``config["docs"]["enabled"]`` is true AND a keyring
+    Mirror settings are resolved skill-scoped first: the adopted docs-mirror
+    skill's ``config.docs`` (merged with local ``skills.<name>.config``
+    overrides) provides the defaults, and the legacy global ``config["docs"]``
+    block (when present) is overlaid on top for backward compatibility. When
+    no skill carries docs settings, the global block alone is used — identical
+    to the pre-skill-config behavior.
+
+    Enabled only when the resolved ``docs.enabled`` is true AND a keyring
     credential is present. Returns None otherwise so the runtime can pass None
     to CognitiveEngine and disable the mirror with zero behavior change.
 
@@ -309,7 +340,9 @@ def build_docs_mirror(config: dict) -> DocsMirror | None:
     ``min_hub_tier`` is clamped to >= 3 (staff-only) to prevent an operator
     from silently weakening the staff-only gate via local config.
     """
-    docs_config = config.get("docs") or {}
+    skill_docs = _docs_skill_config(config, skill_loader) or {}
+    global_docs = config.get("docs") or {}
+    docs_config = {**skill_docs, **global_docs}
     if not docs_config.get("enabled", False):
         return None
 
