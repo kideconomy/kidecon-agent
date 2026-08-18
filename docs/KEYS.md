@@ -42,5 +42,23 @@ delete(jwt_key("legal-bot"))        # remove
 
 Keyring backends do not reliably enumerate, so API-key *provider names* (not
 values) are tracked in a manifest at `~/.config/kidecon/keys.json`, managed via
-`list_api_keys()` / `save_api_keys()` in `wrappers/keys.py`. This lets
-`kidecon key list` enumerate keys without parsing name prefixes.
+`list_api_keys()` / `save_api_keys()` in `wrappers/keys.py`.
+
+`kidecon key list` (and `kidecon doctor`) are **catalog-driven**: they render
+whatever a key catalog in `wrappers/keys.py` enumerates, so adding a key is a
+one-line registration, never CLI hardcoding. The catalog groups keys into:
+
+- **Legacy slots** (`LEGACY_KEY_SPECS`) — `hub_jwt`, `agent_id`. Read-only
+  fallback during migration; legitimately unset once explicit agent profiles
+  exist, so they render as `(not set)` instead of a confusing error.
+- **Account credentials** (`ACCOUNT_KEY_SPECS`) — `kideconomy_username`,
+  `kideconomy_token`.
+- **Per-agent keys** — JWT stored under `jwt_<agent>` (from the keyring, never
+  disk) plus `agent_id` / `ke_username` from the profile file. Shown for the
+  resolved `--agent`, or for every profile when no `--agent` is given.
+- **Provider keys** (`WELL_KNOWN_PROVIDERS` + the user manifest) — e.g.
+  `openrouter` (required) and `lexor` (optional).
+
+`enumerate_keys(profile=None)` returns the merged, resolved list of `KeyEntry`
+rows (see `wrappers/keys.py`). Consumers render these rows fluidly and never
+hardcode a key name.

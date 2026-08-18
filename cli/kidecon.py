@@ -21,12 +21,13 @@ from wrappers.hub_client import HubClient
 from wrappers.keys import INDEX_PATH
 from wrappers.keys import KEY_AGENT_ID
 from wrappers.keys import KEY_JWT
-from wrappers.keys import KEY_KE_TOKEN
 from wrappers.keys import KEY_KE_USERNAME
 from wrappers.keys import KEYRING_SERVICE
 from wrappers.keys import api_key
+from wrappers.keys import enumerate_keys
 from wrappers.keys import list_api_keys
 from wrappers.keys import save_api_keys
+from wrappers.keys import well_known_provider_specs
 from wrappers.profile_store import (
     Profile,
     create_profile,
@@ -1273,14 +1274,6 @@ _key_app = typer.Typer(help="Manage API keys in keyring.")
 app.add_typer(_key_app, name="key", help="Manage API keys in keyring.")
 
 
-def _mask(value: str | None) -> str:
-    if value and len(value) > 8:
-        return f"{value[:4]}...{value[-4:]}"
-    if value:
-        return "***"
-    return "(not set)"
-
-
 @_key_app.callback()
 def key_main(
     no_color: bool = typer.Option(False, "--no-color", help="Disable color and rich formatting."),
@@ -1317,22 +1310,20 @@ def key_remove(
 
 @_key_app.command("list")
 def key_list():
-    api_keys = list_api_keys()
+    """List every known credential:
+    legacy slots, per-agent keys, and provider keys — enumerated from the
+    key catalog in `wrappers/keys.py`, never hardcoded here.
+    """
+    profile = resolve_profile(_agent_override)
+    entries = enumerate_keys(profile)
+
     table = Table(show_header=True, header_style="bold")
-    table.add_column("Name")
+    table.add_column("Key")
+    table.add_column("Purpose", overflow="fold")
     table.add_column("Value", overflow="fold")
 
-    profile = resolve_profile(_agent_override)
-    table.add_row("jwt", _mask(profile.jwt if profile else None))
-    table.add_row("agent_id", profile.agent_id if profile else "(not set)")
-    ke_user = (profile.ke_username if profile else None) or keyring.get_password(
-        KEYRING_SERVICE, KEY_KE_USERNAME
-    )
-    table.add_row(KEY_KE_USERNAME, _mask(ke_user))
-    table.add_row("kideconomy_token", _mask(keyring.get_password(KEYRING_SERVICE, KEY_KE_TOKEN)))
-    for k in api_keys:
-        v = keyring.get_password(KEYRING_SERVICE, api_key(k))
-        table.add_row(k, _mask(v))
+    for entry in entries:
+        table.add_row(entry.label, entry.description, entry.masked)
     console.print(table)
 
 
@@ -1660,12 +1651,11 @@ def doctor():
     def _add(group, label, status, detail, hint=""):
         results.append((group, label, status, detail, hint))
 
-    # Keys required for the agent to operate.
-    # Each entry: (keyring_name, description, required)
+    # Keys required for the agent to operate — derived from the shared key
+    # catalog so `doctor` and `key list` never drift.
     required_keys: list[tuple[str, str, bool]] = [
-        ("openrouter", "LLM inference via OpenRouter", True),
-        # Optional integrations — present only when the operator opts in.
-        ("lexor", "Lexor legal MCP (staff-only, read-only)", False),
+        (spec.key, spec.description, spec.required)
+        for spec in well_known_provider_specs()
     ]
 
     py_ver = platform.python_version()
@@ -1753,14 +1743,6 @@ def doctor():
                  f"Run: kidecon key add --name {key_name} --value <your-key>")
         else:
             _add("Keys", key_name, "warn", f"optional — {description}")
-
-    api_keys = list_api_keys()
-    for key_name in api_keys:
-        if key_name in [k for k, _, _ in required_keys]:
-            continue
-        v = keyring.get_password(KEYRING_SERVICE, api_key(key_name))
-        _add("Keys", key_name, "pass" if v else "warn",
-             "user-added" if v else "indexed but missing")
 
     # LLM model validation
     llm_config = config.get("llm", {}) if "config" in dir() else {}
