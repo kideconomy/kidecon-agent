@@ -133,9 +133,9 @@ and KidEconomy (`https://kidecon.me`). You'll see the splash screen, then the co
 
 ```bash
 kidecon authenticate
-# KidEconomy username: ***REMOVED***
+# KidEconomy username: KIDUSER
 # KidEconomy password: ********
-# ✓ Authenticated as ***REMOVED***.
+# ✓ Authenticated as KIDUSER.
 # Account token stored — `kidecon status --me` works without --agent.
 ```
 
